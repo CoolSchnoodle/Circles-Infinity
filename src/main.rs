@@ -3,10 +3,45 @@ use bevy::prelude::*;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_systems(Startup, (
+            create_player,
+            create_wave_counter,
+        ))
+        .add_systems(Update, (
+            remove_dead_enemies,
+        ))
         .run();
 }
 
+fn create_player(mut commands: Commands) {
+    commands.spawn((
+        Player,
+        PlayerStats::default(),
+        PlayerState::from_player_stats(PlayerStats::default()),
+        Position::new(0f32, 0f32),
+        Health::new(100),
+    ));
+}
 
+fn create_wave_counter(mut commands: Commands) {
+    commands.insert_resource(WaveCounter::default());
+}
+
+fn remove_dead_enemies(mut commands: Commands, query: Query<(Entity, &Health), With<Enemy>>) {
+    for enemy in query.iter() {
+        if enemy.1.current_health() == 0 {
+            commands.entity(enemy.0).despawn();
+        }
+    }
+}
+
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
+struct WaveCounter(pub u64);
+
+#[derive(Resource)]
+#[derive(Debug, Clone, Default)]
+struct WaveSpawnTimer(pub Timer);
 
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, Default)]
@@ -21,10 +56,74 @@ struct Enemy;
 struct Position { x: f32, y: f32 }
 
 #[derive(Component)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct PlayerStats {
+    close_attack_damage: usize,
+    close_attack_cooldown: f32,
+
+    ranged_attack_damage: usize,
+    ranged_attack_cooldown: f32,
+    ranged_attack_seeking: i8,
+    ranged_attack_speed: f32,
+
+    movement_speed: f32,
+}
+
+#[derive(Component)]
+#[derive(Debug, Clone)]
+struct PlayerState {
+    close_attack_timer: Timer,
+    ranged_attack_timer: Timer,
+    facing: u8,
+}
+
+#[derive(Component)]
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 struct Health {
     max_hp: usize,
     current_hp: usize
+}
+
+impl Position {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+    pub fn x_pos(&self) -> f32 {
+        self.x
+    }
+    pub fn y_pos(&self) -> f32 {
+        self.y
+    }
+    pub fn set_x(&mut self, new_x: f32) {
+        self.x = new_x;
+    }
+    pub fn set_y(&mut self, new_y: f32) {
+        self.y = new_y;
+    }
+    pub fn swap_x(&mut self, mut new_x: f32) -> f32 {
+        std::mem::swap(&mut self.x, &mut new_x);
+        new_x
+    }
+    pub fn swap_y(&mut self, mut new_y: f32) -> f32 {
+        std::mem::swap(&mut self.y, &mut new_y);
+        new_y
+    }
+}
+
+impl PlayerState {
+    fn from_player_stats(player_stats: PlayerStats) -> Self {
+        Self {
+            close_attack_timer: Timer::from_seconds(
+                player_stats.close_attack_cooldown,
+                TimerMode::Repeating,
+            ),
+            ranged_attack_timer: Timer::from_seconds(
+                player_stats.ranged_attack_cooldown,
+                TimerMode::Repeating,
+            ),
+            facing: 0u8,
+        }
+    }
 }
 
 impl Health {
@@ -136,29 +235,19 @@ impl Health {
     }
 }
 
-impl Position {
-    pub fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-    pub fn x_pos(&self) -> f32 {
-        self.x
-    }
-    pub fn y_pos(&self) -> f32 {
-        self.y
-    }
-    pub fn set_x(&mut self, new_x: f32) {
-        self.x = new_x;
-    }
-    pub fn set_y(&mut self, new_y: f32) {
-        self.y = new_y;
-    }
-    pub fn swap_x(&mut self, mut new_x: f32) -> f32 {
-        std::mem::swap(&mut self.x, &mut new_x);
-        new_x
-    }
-    pub fn swap_y(&mut self, mut new_y: f32) -> f32 {
-        std::mem::swap(&mut self.y, &mut new_y);
-        new_y
+impl Default for PlayerStats {
+    fn default() -> Self {
+        Self {
+            close_attack_damage: 30usize,
+            close_attack_cooldown: 1f32,
+
+            ranged_attack_damage: 5usize,
+            ranged_attack_cooldown: 0.5f32,
+            ranged_attack_seeking: 0i8,
+            ranged_attack_speed: 20f32,
+
+            movement_speed: 30f32
+        }
     }
 }
 
