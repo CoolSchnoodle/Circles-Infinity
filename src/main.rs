@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use rand::random;
 
 fn main() {
     App::new()
@@ -8,7 +9,7 @@ fn main() {
             create_wave_counter,
         ))
         .add_systems(Update, (
-            remove_dead_enemies,
+            (remove_dead_enemies, spawn_wave_if_no_enemies).chain(),
         ))
         .run();
 }
@@ -35,13 +36,53 @@ fn remove_dead_enemies(mut commands: Commands, query: Query<(Entity, &Health), W
     }
 }
 
+fn spawn_wave_if_no_enemies(
+    mut commands: Commands,
+    mut wave_counter: ResMut<WaveCounter>,
+    query: Query<&Enemy>
+) {
+    use num_traits::float::FloatConst;
+
+    // If the iterator returns Some(_), then there are still enemies left.
+    // Therefore, a new wave should not be spawned.
+    if query.iter().next().is_some() {
+        return;
+    }
+
+    // Since we're spawning a new wave, increment the wave counter.
+    // Note: WaveCounter::default() is 0 so the first wave will be 1.
+    wave_counter.0 += 1;
+
+    let enemies_to_spawn = 8 + (2 * wave_counter.0);
+    const ENEMY_DISTANCE_MIN: f32 = 512f32;
+    const ENEMY_DISTANCE_MAX: f32 = 1024f32;
+    const ENEMY_DISTANCE_DIFF: f32 = ENEMY_DISTANCE_MAX - ENEMY_DISTANCE_MIN;
+    for i in 0..enemies_to_spawn {
+        let angle_radians: f32 = random::<f32>() * f32::PI() * 2.0;
+        let distance: f32 = ENEMY_DISTANCE_MIN + (random::<f32>() * ENEMY_DISTANCE_DIFF);
+        let pos = Position::new(
+            (angle_radians.cos() * distance).into(),
+            (angle_radians.sin() * distance).into(),
+        );
+        commands.spawn((
+            Enemy,
+            pos,
+            Health::new(wave_counter.0 as usize + 39),
+            EnemyStats::new(
+                10,
+                1f32,
+                1,
+                4f32,
+                100f32,
+                48f32 + (wave_counter.0 * 2) as f32,
+            ),
+        ));
+    }
+}
+
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
 struct WaveCounter(pub u64);
-
-#[derive(Resource)]
-#[derive(Debug, Clone, Default)]
-struct WaveSpawnTimer(pub Timer);
 
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, Default)]
@@ -75,6 +116,26 @@ struct PlayerState {
     close_attack_timer: Timer,
     ranged_attack_timer: Timer,
     facing: u8,
+}
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct EnemyStats {
+    close_attack_damage: usize,
+    close_attack_cooldown: f32,
+
+    ranged_attack_damage: usize,
+    ranged_attack_cooldown: f32,
+    ranged_attack_speed: f32,
+
+    movement_speed: f32,
+}
+
+#[derive(Component)]
+#[derive(Debug, Clone)]
+struct EnemyState {
+    close_attack_timer: Timer,
+    ranged_attack_timer: Timer,
 }
 
 #[derive(Component)]
@@ -122,6 +183,39 @@ impl PlayerState {
                 TimerMode::Repeating,
             ),
             facing: 0u8,
+        }
+    }
+}
+
+impl EnemyStats {
+    fn new(
+        close_attack_damage: usize,
+        close_attack_cooldown: f32,
+
+        ranged_attack_damage: usize,
+        ranged_attack_cooldown: f32,
+        ranged_attack_speed: f32,
+
+        movement_speed: f32,
+    ) -> Self {
+        Self {
+            close_attack_damage,
+            close_attack_cooldown,
+            ranged_attack_damage,
+            ranged_attack_cooldown,
+            ranged_attack_speed,
+            movement_speed,
+        }
+    }
+}
+
+impl EnemyState {
+    fn from_enemy_stats(enemy_stats: EnemyStats) -> Self {
+        Self {
+            close_attack_timer:
+                Timer::from_seconds(enemy_stats.close_attack_cooldown, TimerMode::Repeating),
+            ranged_attack_timer:
+                Timer::from_seconds(enemy_stats.ranged_attack_cooldown, TimerMode::Repeating),
         }
     }
 }
