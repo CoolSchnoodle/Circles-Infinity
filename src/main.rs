@@ -1,17 +1,61 @@
-use bevy::prelude::*;
+use bevy::{
+    prelude::*,
+    color::palettes::css::*,
+};
+use bevy::color::palettes::tailwind::{GREEN_800, ORANGE_800, RED_800, RED_900};
+use bevy_prototype_lyon::prelude::*;
 use rand::random;
+
+// Look... there isn't a good way to draw a circle
+// So instead I'm just making a many-sided regular polygon
+macro_rules! circle {
+    ($radius:expr, $pos:expr) => {{
+        let rad_f32 = ::std::convert::Into::<f32>::into($radius);
+        let circle = ::bevy_prototype_lyon::shapes::RegularPolygon {
+            sides: (rad_f32 * 4f32).floor() as usize * 4usize,
+            feature: ::bevy_prototype_lyon::shapes::RegularPolygonFeature::Radius(rad_f32),
+            center: ::std::convert::Into::<Vec2>::into($pos),
+        };
+        ::bevy_prototype_lyon::entity::ShapeBundle {
+            path: ::bevy_prototype_lyon::geometry::GeometryBuilder::build_as(&circle),
+            ..default()
+        }
+    }}
+}
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .insert_resource(Msaa::Sample4)
+        .add_plugins((DefaultPlugins, ShapePlugin))
         .add_systems(Startup, (
             create_player,
             create_wave_counter,
+            create_camera,
+            start_on_menu,
         ))
         .add_systems(Update, (
-            (remove_dead_enemies, spawn_wave_if_no_enemies).chain(),
+            (spawn_wave_if_no_enemies, destroy_an_enemy, remove_dead_enemies)
+                .run_if(resource_exists::<Running>)
+                .chain(),
         ))
         .run();
+}
+
+fn destroy_an_enemy(mut commands: Commands, query: Query<Entity, With<Enemy>>) {
+    commands.entity(
+        query.iter().next().expect("Spawned a wave if no enemies right before this")
+    ).despawn();
+}
+
+const ENEMY_COLOR: Srgba = ORANGE_800;
+const ENEMY_RADIUS: f32 = 40.0;
+
+const PLAYER_COLOR_MAX_HP: Srgba = GREEN_800;
+const PLAYER_COLOR_NO_HP: Srgba = RED_800;
+const PLAYER_RADIUS: f32 = 50.0;
+
+fn create_camera(mut commands: Commands) {
+    commands.spawn(Camera2dBundle::default());
 }
 
 fn create_player(mut commands: Commands) {
@@ -21,11 +65,38 @@ fn create_player(mut commands: Commands) {
         PlayerState::from_player_stats(PlayerStats::default()),
         Position::new(0f32, 0f32),
         Health::new(100),
+        circle!(PLAYER_RADIUS, Position::new(0.0, 0.0)),
+        Fill::color(PLAYER_COLOR_MAX_HP),
+        Stroke::new(BLACK, 5.0),
     ));
+}
+
+fn start_on_menu(mut commands: Commands) {
+    commands.insert_resource(MainMenu);
 }
 
 fn create_wave_counter(mut commands: Commands) {
     commands.insert_resource(WaveCounter::default());
+}
+
+fn update_player_color(mut query: Query<(&mut Fill, &Health), With<Player>>) {
+
+    let (mut fill, health) = match query.iter_mut().next() {
+        Some(t) => t,
+        None => unreachable!("player should always exist if the game is running")
+    };
+
+    let health_percent = (health.max_health() as f32) / (health.current_health() as f32);
+
+    fn mix(min: f32, max: f32, percent: f32) -> f32 {
+        return (min * (1.0 - percent)) + (max * percent)
+    }
+
+    fill.color = Srgba::rgb(
+        mix(PLAYER_COLOR_NO_HP.red, PLAYER_COLOR_MAX_HP.red, health_percent),
+        mix(PLAYER_COLOR_NO_HP.blue, PLAYER_COLOR_MAX_HP.blue, health_percent),
+        mix(PLAYER_COLOR_NO_HP.green, PLAYER_COLOR_MAX_HP.green, health_percent),
+    ).into();
 }
 
 fn remove_dead_enemies(mut commands: Commands, query: Query<(Entity, &Health), With<Enemy>>) {
@@ -57,7 +128,7 @@ fn spawn_wave_if_no_enemies(
     const ENEMY_DISTANCE_MIN: f32 = 512f32;
     const ENEMY_DISTANCE_MAX: f32 = 1024f32;
     const ENEMY_DISTANCE_DIFF: f32 = ENEMY_DISTANCE_MAX - ENEMY_DISTANCE_MIN;
-    for i in 0..enemies_to_spawn {
+    for _ in 0..enemies_to_spawn {
         let angle_radians: f32 = random::<f32>() * f32::PI() * 2.0;
         let distance: f32 = ENEMY_DISTANCE_MIN + (random::<f32>() * ENEMY_DISTANCE_DIFF);
         let pos = Position::new(
@@ -67,7 +138,7 @@ fn spawn_wave_if_no_enemies(
         commands.spawn((
             Enemy,
             pos,
-            Health::new(wave_counter.0 as usize + 39),
+            Health::new(wave_counter.0 as usize * 2 + 50),
             EnemyStats::new(
                 10,
                 1f32,
@@ -76,9 +147,44 @@ fn spawn_wave_if_no_enemies(
                 100f32,
                 48f32 + (wave_counter.0 * 2) as f32,
             ),
+            circle!(ENEMY_RADIUS, pos),
+            Fill::color(ENEMY_COLOR),
+            Stroke::new(BLACK, 3.0),
         ));
     }
 }
+
+
+fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: PlayerUpgrade) {
+    match upgrade {
+        PlayerUpgrade::InstantHeal => health.heal(health.max_health() / 4),
+        PlayerUpgrade::HealOverTime => stats.heal_per_second += 2,
+        PlayerUpgrade::MaxHp => health.add_max_hp(15),
+
+        PlayerUpgrade::CloseAttackCooldown => stats.close_attack_cooldown *= 0.8,
+        PlayerUpgrade::CloseAttackDamage => stats.close_attack_damage += 5,
+
+        PlayerUpgrade::RangedAttackCooldown => stats.ranged_attack_cooldown *= 0.9,
+        PlayerUpgrade::RangedAttackDamage => stats.ranged_attack_damage += 3,
+        PlayerUpgrade::RangedAttackPierce => stats.ranged_attack_pierce += 2,
+        PlayerUpgrade::RangedAttackSpeed => stats.ranged_attack_speed *= 1.25,
+
+        PlayerUpgrade::MoveSpeed => stats.movement_speed *= 1.15,
+    }
+}
+
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone)]
+struct Running;
+
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone)]
+struct Paused;
+
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone)]
+struct MainMenu;
+
 
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
@@ -93,7 +199,32 @@ struct Player;
 struct Enemy;
 
 #[derive(Component)]
-#[derive(Debug, Copy, Clone, PartialOrd, PartialEq, Default)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Projectile {
+    damage: usize,
+    speed_per_sec: f32,
+    pierce_left: usize,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+enum PlayerUpgrade {
+    InstantHeal,
+    HealOverTime,
+    MaxHp,
+
+    CloseAttackDamage,
+    CloseAttackCooldown,
+
+    RangedAttackDamage,
+    RangedAttackCooldown,
+    RangedAttackPierce,
+    RangedAttackSpeed,
+
+    MoveSpeed,
+}
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone, PartialEq, Default)]
 struct Position { x: f32, y: f32 }
 
 #[derive(Component)]
@@ -104,10 +235,11 @@ struct PlayerStats {
 
     ranged_attack_damage: usize,
     ranged_attack_cooldown: f32,
-    ranged_attack_seeking: i8,
+    ranged_attack_pierce: usize,
     ranged_attack_speed: f32,
 
     movement_speed: f32,
+    heal_per_second: usize,
 }
 
 #[derive(Component)]
@@ -115,6 +247,7 @@ struct PlayerStats {
 struct PlayerState {
     close_attack_timer: Timer,
     ranged_attack_timer: Timer,
+    heal_timer: Timer,
     facing: u8,
 }
 
@@ -182,6 +315,7 @@ impl PlayerState {
                 player_stats.ranged_attack_cooldown,
                 TimerMode::Repeating,
             ),
+            heal_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
             facing: 0u8,
         }
     }
@@ -332,15 +466,16 @@ impl Health {
 impl Default for PlayerStats {
     fn default() -> Self {
         Self {
-            close_attack_damage: 30usize,
+            close_attack_damage: 40usize,
             close_attack_cooldown: 1f32,
 
-            ranged_attack_damage: 5usize,
+            ranged_attack_damage: 10usize,
             ranged_attack_cooldown: 0.5f32,
-            ranged_attack_seeking: 0i8,
+            ranged_attack_pierce: 4usize,
             ranged_attack_speed: 20f32,
 
-            movement_speed: 30f32
+            movement_speed: 30f32,
+            heal_per_second: 5usize,
         }
     }
 }
@@ -370,6 +505,15 @@ impl std::ops::Mul<f32> for Position {
         Self {
             x: self.x * multiplier,
             y: self.y * multiplier,
+        }
+    }
+}
+
+impl Into<Vec2> for Position {
+    fn into(self) -> Vec2 {
+        Vec2 {
+            x: self.x,
+            y: self.y
         }
     }
 }
