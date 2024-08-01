@@ -11,3 +11,6 @@ num-traits = "0.2.19"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+debug = true

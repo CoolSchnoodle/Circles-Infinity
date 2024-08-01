@@ -2,8 +2,11 @@ use bevy::{
     prelude::*,
     color::palettes::css::*,
 };
-use bevy::color::palettes::tailwind::{GREEN_800, ORANGE_800, RED_800, RED_900};
+use bevy::color::palettes::tailwind::*;
+use bevy::input::common_conditions::{input_pressed, input_just_pressed};
+
 use bevy_prototype_lyon::prelude::*;
+
 use rand::random;
 
 // Look... there isn't a good way to draw a circle
@@ -12,7 +15,7 @@ macro_rules! circle {
     ($radius:expr, $pos:expr) => {{
         let rad_f32 = ::std::convert::Into::<f32>::into($radius);
         let circle = ::bevy_prototype_lyon::shapes::RegularPolygon {
-            sides: (rad_f32 * 4f32).floor() as usize * 4usize,
+            sides: 8 + (rad_f32 * 0.25).floor() as usize * 3usize,
             feature: ::bevy_prototype_lyon::shapes::RegularPolygonFeature::Radius(rad_f32),
             center: ::std::convert::Into::<Vec2>::into($pos),
         };
@@ -34,6 +37,20 @@ fn main() {
             start_on_menu,
         ))
         .add_systems(Update, (
+            handle_menu_input.run_if(resource_exists::<MainMenu>),
+            handle_paused_input.run_if(resource_exists::<Paused>),
+            handle_running_input.run_if(resource_exists::<Running>),
+            handle_guide_input.run_if(resource_exists::<ViewingGuide>),
+
+            update_player_color.run_if(resource_exists::<Running>),
+            move_projectiles.run_if(resource_exists::<Running>),
+
+            tick_player_timers.run_if(resource_exists::<Running>),
+            player_ranged_attack
+                .after(tick_player_timers)
+                .run_if(|mouse: Res<ButtonInput<MouseButton>>| mouse.pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Left))
+                .run_if(resource_exists::<Running>),
+
             (spawn_wave_if_no_enemies, destroy_an_enemy, remove_dead_enemies)
                 .run_if(resource_exists::<Running>)
                 .chain(),
@@ -53,6 +70,45 @@ const ENEMY_RADIUS: f32 = 40.0;
 const PLAYER_COLOR_MAX_HP: Srgba = GREEN_800;
 const PLAYER_COLOR_NO_HP: Srgba = RED_800;
 const PLAYER_RADIUS: f32 = 50.0;
+
+const PROJECTILE_RADIUS: f32 = 15.0;
+
+fn handle_menu_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.pressed(KeyCode::Enter) {
+        commands.remove_resource::<MainMenu>();
+        commands.insert_resource(Running);
+    }
+    if keyboard.pressed(KeyCode::KeyG) {
+        commands.remove_resource::<MainMenu>();
+        commands.insert_resource(ViewingGuide);
+    }
+}
+
+fn handle_running_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.just_pressed(KeyCode::Escape) {
+        commands.remove_resource::<Running>();
+        commands.insert_resource(Paused);
+    }
+}
+
+fn handle_paused_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.just_pressed(KeyCode::Space) {
+        commands.remove_resource::<Paused>();
+        commands.insert_resource(Running);
+    }
+    if keyboard.just_pressed(KeyCode::Home) {
+        commands.remove_resource::<Paused>();
+        commands.insert_resource(MainMenu);
+    }
+}
+
+fn handle_guide_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.pressed(KeyCode::Escape) {
+        commands.remove_resource::<ViewingGuide>();
+        commands.insert_resource(MainMenu);
+    }
+}
+
 
 fn create_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
@@ -79,6 +135,66 @@ fn create_wave_counter(mut commands: Commands) {
     commands.insert_resource(WaveCounter::default());
 }
 
+
+fn tick_player_timers(time: Res<Time>, mut query: Query<&mut PlayerState, With<Player>>) {
+    let mut state = query.single_mut();
+
+    if state.heal_timer.finished() { state.heal_timer.reset() }
+    if state.close_attack_timer.finished() { state.close_attack_timer.reset() }
+    if state.ranged_attack_timer.finished() { state.ranged_attack_timer.reset() }
+
+    let dt = time.delta();
+    state.heal_timer.tick(dt);
+    state.close_attack_timer.tick(dt);
+    state.ranged_attack_timer.tick(dt);
+}
+
+fn player_ranged_attack(
+    mut commands: Commands,
+    window: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform)>,
+    query: Query<(&PlayerStats, &PlayerState, &Position), With<Player>>
+) {
+    let (stats, state, pos) = query.single();
+
+    let (camera, transform) = camera.single();
+    let Some(relative_mouse_coords): Option<Vec2> = window.single()
+        .cursor_position()
+        .and_then(|mouse| camera.viewport_to_world_2d(transform, mouse))
+        .map(|mouse| mouse - Vec2::new(pos.x, pos.y))
+    else { return };
+
+    if !state.ranged_attack_timer.just_finished() {
+        return;
+    }
+
+    let damage = stats.ranged_attack_damage;
+    let velocity = {
+        let length = relative_mouse_coords.length();
+        let x = relative_mouse_coords.x / length;
+        let y = relative_mouse_coords.y / length;
+        let scale = stats.ranged_attack_speed;
+        Vec2::new(x * scale, y * scale)
+    };
+    let location = pos.into();
+    let pierce_left = stats.ranged_attack_pierce;
+
+    commands.spawn((
+        Projectile { damage, velocity, location, pierce_left },
+        circle!(PROJECTILE_RADIUS, pos),
+        Fill::color(YELLOW_GREEN),
+        Stroke::new(BLACK, 5f32),
+    ));
+}
+
+fn move_projectiles(time: Res<Time>, mut query: Query<(&mut Projectile, &mut Path)>) {
+    for (mut proj, mut path) in query.iter_mut() {
+        let vel = proj.velocity;
+        proj.location += vel * time.delta_seconds();
+        *path = circle!(PROJECTILE_RADIUS, proj.location).path;
+    }
+}
+
 fn update_player_color(mut query: Query<(&mut Fill, &Health), With<Player>>) {
 
     let (mut fill, health) = match query.iter_mut().next() {
@@ -94,8 +210,8 @@ fn update_player_color(mut query: Query<(&mut Fill, &Health), With<Player>>) {
 
     fill.color = Srgba::rgb(
         mix(PLAYER_COLOR_NO_HP.red, PLAYER_COLOR_MAX_HP.red, health_percent),
-        mix(PLAYER_COLOR_NO_HP.blue, PLAYER_COLOR_MAX_HP.blue, health_percent),
         mix(PLAYER_COLOR_NO_HP.green, PLAYER_COLOR_MAX_HP.green, health_percent),
+        mix(PLAYER_COLOR_NO_HP.blue, PLAYER_COLOR_MAX_HP.blue, health_percent),
     ).into();
 }
 
@@ -142,8 +258,8 @@ fn spawn_wave_if_no_enemies(
             EnemyStats::new(
                 10,
                 1f32,
-                1,
-                4f32,
+                0,
+                1f32,
                 100f32,
                 48f32 + (wave_counter.0 * 2) as f32,
             ),
@@ -176,15 +292,15 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
 struct Running;
-
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
 struct Paused;
-
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
 struct MainMenu;
-
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone)]
+struct ViewingGuide;
 
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Default)]
@@ -201,9 +317,10 @@ struct Enemy;
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, PartialEq)]
 struct Projectile {
-    damage: usize,
-    speed_per_sec: f32,
-    pierce_left: usize,
+    pub damage: usize,
+    pub velocity: Vec2,
+    pub location: Vec2,
+    pub pierce_left: usize,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -225,7 +342,7 @@ enum PlayerUpgrade {
 
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, PartialEq, Default)]
-struct Position { x: f32, y: f32 }
+struct Position { pub x: f32, pub y: f32 }
 
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -248,7 +365,7 @@ struct PlayerState {
     close_attack_timer: Timer,
     ranged_attack_timer: Timer,
     heal_timer: Timer,
-    facing: u8,
+    facing_radians: f32,
 }
 
 #[derive(Component)]
@@ -302,6 +419,12 @@ impl Position {
         std::mem::swap(&mut self.y, &mut new_y);
         new_y
     }
+
+    fn distance(&self, other: &Self) -> f32 {
+        let this: Vec2 = self.into();
+        let other: Vec2 = other.into();
+        this.distance(other)
+    }
 }
 
 impl PlayerState {
@@ -316,7 +439,7 @@ impl PlayerState {
                 TimerMode::Repeating,
             ),
             heal_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
-            facing: 0u8,
+            facing_radians: 0f32,
         }
     }
 }
@@ -469,10 +592,10 @@ impl Default for PlayerStats {
             close_attack_damage: 40usize,
             close_attack_cooldown: 1f32,
 
-            ranged_attack_damage: 10usize,
-            ranged_attack_cooldown: 0.5f32,
+            ranged_attack_damage: 5usize,
+            ranged_attack_cooldown: 0.15f32,
             ranged_attack_pierce: 4usize,
-            ranged_attack_speed: 20f32,
+            ranged_attack_speed: 250f32,
 
             movement_speed: 30f32,
             heal_per_second: 5usize,
@@ -515,5 +638,16 @@ impl Into<Vec2> for Position {
             x: self.x,
             y: self.y
         }
+    }
+}
+impl Into<Vec2> for &Position {
+    fn into(self) -> Vec2 {
+        (*self).into()
+    }
+}
+
+impl From<Vec2> for Position {
+    fn from(value: Vec2) -> Self {
+        Self::new(value.x, value.y)
     }
 }
