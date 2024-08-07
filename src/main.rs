@@ -42,29 +42,39 @@ fn main() {
             start_on_menu,
         ))
         .add_systems(Update, (
+            guide_to_menu.run_if(resource_exists::<Transition<Guide, MainMenu>>),
+            menu_to_guide.run_if(resource_exists::<Transition<MainMenu, Guide>>),
             menu_to_running.run_if(resource_exists::<Transition<MainMenu, Running>>),
+            running_to_lose_screen
+                .run_if(resource_exists::<Transition<Running, LoseScreen>>)
+                .before(check_and_resolve_player_death),
+            lose_screen_to_running.run_if(resource_exists::<Transition<LoseScreen, Running>>),
+            lose_screen_to_menu.run_if(resource_exists::<Transition<LoseScreen, MainMenu>>),
 
             handle_menu_input.run_if(resource_exists::<MainMenu>),
             handle_paused_input.run_if(resource_exists::<Paused>),
             handle_running_input.run_if(resource_exists::<Running>),
-            handle_guide_input.run_if(resource_exists::<ViewingGuide>),
+            handle_guide_input.run_if(resource_exists::<Guide>),
+            handle_lose_screen_input.run_if(resource_exists::<LoseScreen>),
 
             update_player_color.run_if(resource_exists::<Running>),
-            move_projectiles.run_if(resource_exists::<Running>),
 
             update_player
                 .before(player_ranged_attack)
                 .before(enemy_update_and_attack)
                 .run_if(resource_exists::<Running>),
-            (player_ranged_attack
-                .run_if(input_pressed(MouseButton::Left)),
-            check_and_resolve_player_death,
+            (
+                player_ranged_attack
+                    .run_if(input_pressed(MouseButton::Left)),
+                check_and_resolve_player_death,
             ).run_if(resource_exists::<Running>).chain(),
 
-            (resolve_player_projectiles,
-            remove_dead_enemies,
-            enemy_update_and_attack,
-            spawn_wave_if_no_enemies,
+            (
+                move_projectiles,
+                resolve_player_projectiles,
+                remove_dead_enemies,
+                enemy_update_and_attack,
+                spawn_wave_if_no_enemies,
             ).run_if(resource_exists::<Running>).chain()
 
         ))
@@ -80,15 +90,14 @@ const PLAYER_RADIUS: f32 = 50.0;
 
 const PROJECTILE_RADIUS: f32 = 15.0;
 
-const ENEMY_MOVE_SPEED: f32 = 20.0;
-
-fn menu_to_running(mut commands: Commands, main_menu_items: Query<Entity, With<MainMenuItem>>) {
+fn menu_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: Commands, main_menu_items: Query<Entity, With<MainMenuItem>>) {
     for id in main_menu_items.iter() {
         commands.entity(id).despawn()
     }
 
     let stats = PlayerStats::default();
     commands.spawn((
+        RunningObject,
         NoFrustumCulling, // prevent weird invisibility
         Player,
         Health::new(100),
@@ -100,6 +109,7 @@ fn menu_to_running(mut commands: Commands, main_menu_items: Query<Entity, With<M
         Stroke::new(BLACK, 5.0),
     ));
     commands.spawn((
+        RunningObject,
         WaveCounterText,
         TextBundle::from_section("Wave 0", TextStyle::default())
             .with_style(Style {
@@ -109,9 +119,124 @@ fn menu_to_running(mut commands: Commands, main_menu_items: Query<Entity, With<M
                 ..default()
             }),
     ));
+    wave_counter.0 = 0;
 
     commands.remove_resource::<Transition<MainMenu, Running>>();
     commands.insert_resource(Running);
+}
+
+fn menu_to_guide(mut commands: Commands, entities: Query<Entity, With<MainMenuItem>>) {
+    const GUIDE_TEXT: &'static str = "Oh, you want to actually know how to play the game? Fine.\n\n\
+    You are the green circle (although the color will become more red as you lose health). Enemies, \
+    which are orange circles will spawn around you in waves. Your goal is to survive as many waves \
+    as possible. To get to the next wave, you will need to kill every enemy. By left clicking and \
+    holding, you will create projectiles which damage enemies. That's really the entire game.\n\n\
+    Press Escape to return to the home screen.";
+
+    for id in entities.iter() {
+        commands.entity(id).despawn();
+    }
+
+    commands.spawn((
+        GuideItem,
+        TextBundle::from_section(GUIDE_TEXT, TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(25.0),
+                left: Val::Percent(10.0),
+                right: Val::Percent(10.0),
+                ..default()
+            })
+    ));
+
+    commands.remove_resource::<Transition<MainMenu, Guide>>();
+    commands.insert_resource(Guide);
+}
+
+fn guide_to_menu(mut commands: Commands, entities: Query<Entity, With<GuideItem>>) {
+    for id in entities.iter() {
+        commands.entity(id).despawn();
+    }
+
+    commands.remove_resource::<Transition<Guide, MainMenu>>();
+    start_on_menu(commands);
+}
+
+fn lose_screen_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: Commands, entities: Query<Entity, With<LoseScreenItem>>) {
+    for entity in entities.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    let stats = PlayerStats::default();
+    commands.spawn((
+        RunningObject,
+        NoFrustumCulling, // prevent weird invisibility
+        Player,
+        Health::new(100),
+        stats,
+        PlayerState::from_player_stats(stats),
+        Position::new(0.0, 0.0),
+        circle!(PLAYER_RADIUS, Position::new(0.0, 0.0)),
+        Fill::color(PLAYER_COLOR_MAX_HP),
+        Stroke::new(BLACK, 5.0),
+    ));
+    commands.spawn((
+        RunningObject,
+        WaveCounterText,
+        TextBundle::from_section("Wave 0", TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(2.0),
+                left: Val::Percent(2.0),
+                ..default()
+            }),
+    ));
+    wave_counter.0 = 0;
+
+    commands.remove_resource::<Transition<LoseScreen, Running>>();
+    commands.insert_resource(Running);
+}
+
+fn lose_screen_to_menu(mut commands: Commands, entities: Query<Entity, With<LoseScreenItem>>) {
+    for entity in entities.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    commands.remove_resource::<LoseScreen>();
+    start_on_menu(commands);
+}
+
+fn running_to_lose_screen(
+    wave_counter: Res<WaveCounter>,
+    mut commands: Commands,
+    entities: Query<Entity, With<RunningObject>>,
+) {
+    for entity in entities.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    commands.spawn((
+        LoseScreenItem,
+        TextBundle::from_section(format!(
+                "You lost on wave {}.\n\n\
+                Thanks for playing! Press enter to play again. \
+                I would let you go to the main menu but that crashes the game for some reason...",
+                wave_counter.0
+            ), TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                align_self: AlignSelf::Center,
+                align_content: AlignContent::Center,
+                top: Val::Percent(25.0),
+                bottom: Val::Percent(10.0),
+                left: Val::Percent(10.0),
+                right: Val::Percent(10.0),
+                ..default()
+            }),
+    ));
+
+    commands.remove_resource::<Transition<Running, LoseScreen>>();
+    commands.insert_resource(LoseScreen);
 }
 
 fn handle_menu_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
@@ -121,7 +246,7 @@ fn handle_menu_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>
     }
     if keyboard.pressed(KeyCode::KeyG) {
         commands.remove_resource::<MainMenu>();
-        commands.insert_resource(Transition::new(MainMenu, ViewingGuide));
+        commands.insert_resource(Transition::new(MainMenu, Guide));
     }
 }
 
@@ -145,27 +270,21 @@ fn handle_paused_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode
 
 fn handle_guide_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
     if keyboard.pressed(KeyCode::Escape) {
-        commands.remove_resource::<ViewingGuide>();
-        commands.insert_resource(Transition::new(ViewingGuide, MainMenu));
+        commands.remove_resource::<Guide>();
+        commands.insert_resource(Transition::new(Guide, MainMenu));
+    }
+}
+
+fn handle_lose_screen_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.pressed(KeyCode::Enter) {
+        commands.remove_resource::<LoseScreen>();
+        commands.insert_resource(Transition::new(LoseScreen, Running))
     }
 }
 
 
 fn create_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
-}
-
-fn create_player(mut commands: Commands) {
-    commands.spawn((
-        Player,
-        PlayerStats::default(),
-        PlayerState::from_player_stats(PlayerStats::default()),
-        Position::new(0f32, 0f32),
-        Health::new(100),
-        circle!(PLAYER_RADIUS, Position::new(0.0, 0.0)),
-        Fill::color(PLAYER_COLOR_MAX_HP),
-        Stroke::new(BLACK, 5.0),
-    ));
 }
 
 const MAIN_MENU_TEXT: &'static str =
@@ -177,10 +296,17 @@ fn start_on_menu(mut commands: Commands) {
     commands.insert_resource(MainMenu);
     commands.spawn((
         MainMenuItem,
-        Text2dBundle {
-            text: Text::from_section(MAIN_MENU_TEXT, TextStyle::default()),
-            ..default()
-        }
+        TextBundle::from_section(MAIN_MENU_TEXT, TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                align_self: AlignSelf::Center,
+                align_content: AlignContent::Center,
+                top: Val::Percent(25.0),
+                bottom: Val::Percent(10.0),
+                left: Val::Percent(10.0),
+                right: Val::Percent(10.0),
+                ..default()
+            }),
     ));
 }
 
@@ -218,7 +344,7 @@ fn update_player(
     pos.x += horizontal_movement * dt * stats.movement_speed;
 
     *path = circle!(PLAYER_RADIUS, *pos).path;
-    transform.translation = Vec3::new(pos.x, pos.y, 0.0);
+    transform.translation = transform.translation.lerp(Vec3::new(pos.x, pos.y, transform.translation.z), dt * 3.0);
 
     // update timers
     if state.heal_timer.finished() { state.heal_timer.reset() }
@@ -252,7 +378,7 @@ fn enemy_update_and_attack(
         } else { state.ranged_attack_timer.tick(dt); }
 
         let base_movement = (to_vec2!((pos.x, pos.y)) - to_vec2!(player_pos)).normalize_or_zero();
-        let move_vector = -ENEMY_MOVE_SPEED * base_movement * time.delta_seconds();
+        let move_vector = -stats.movement_speed * base_movement * time.delta_seconds();
         *pos = (to_vec2!((pos.x, pos.y)) + (move_vector)).into();
         *path = circle!(ENEMY_RADIUS, *pos).path;
     }
@@ -338,6 +464,7 @@ fn player_ranged_attack(
     let pierce_left = stats.ranged_attack_pierce;
 
     commands.spawn((
+        RunningObject,
         PlayerProjectile,
         Projectile { damage, velocity, location, pierce_left, last_entity_hit: player_id },
         circle!(PROJECTILE_RADIUS, pos),
@@ -383,6 +510,7 @@ fn spawn_wave_if_no_enemies(
     mut commands: Commands,
     mut wave_counter: ResMut<WaveCounter>,
     mut wave_counter_text: Query<&mut Text, With<WaveCounterText>>,
+    player_pos: Query<&Position, With<Player>>,
     query: Query<&Enemy>
 ) {
     use num_traits::float::FloatConst;
@@ -406,13 +534,14 @@ fn spawn_wave_if_no_enemies(
     for _ in 0..enemies_to_spawn {
         let angle_radians: f32 = random::<f32>() * f32::PI() * 2.0;
         let distance: f32 = ENEMY_DISTANCE_MIN + (random::<f32>() * ENEMY_DISTANCE_DIFF);
+        let player_pos = player_pos.single();
         let pos = Position::new(
-            (angle_radians.cos() * distance).into(),
-            (angle_radians.sin() * distance).into(),
+            player_pos.x + (angle_radians.cos() * distance),
+            player_pos.y + (angle_radians.sin() * distance),
         );
         let stats = EnemyStats::new(
             9 + wave_counter.0 as usize,
-            1.0 * f32::powi(0.9, (wave_counter.0 - 1) as i32),
+            1.0 * f32::powi(0.95, (wave_counter.0 - 1) as i32),
             if wave_counter.0 < 10
                 || (wave_counter.0 < 15 && random::<f32>() < 0.9)
                 || (wave_counter.0 < 20 && random::<f32>() < 0.8)
@@ -424,14 +553,15 @@ fn spawn_wave_if_no_enemies(
                 * f32::powi(1.05, (wave_counter.0 - 10) as i32) as usize
             },
             1.5,
-            150.0 * f32::powi(1.1, wave_counter.0 as i32),
-            48.0 + (wave_counter.0 * 2) as f32,
+            250.0 * f32::powi(1.1, wave_counter.0 as i32),
+            75.0 * f32::powi(1.05, wave_counter.0 as i32),
         );
         commands.spawn((
+            RunningObject,
             NoFrustumCulling, // prevent weird invisibility
             Enemy,
             pos,
-            Health::new(50 + (2*wave_counter.0 as usize)),
+            Health::new(24 + (2*wave_counter.0 as usize)),
             stats,
             EnemyState::from_enemy_stats(stats),
             circle!(ENEMY_RADIUS, pos),
@@ -448,7 +578,6 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
             stats.ranged_attack_damage += 2;
             stats.ranged_attack_cooldown *= 0.95;
             stats.close_attack_damage += 5;
-            stats.ranged_attack_speed *= 1.1;
         },
         PlayerUpgrade::HealthUpgrade => {
             health.add_max_hp(10);
@@ -457,6 +586,7 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
         },
         PlayerUpgrade::SpeedUpgrade => {
             stats.movement_speed *= 1.2;
+            stats.ranged_attack_speed *= 1.3;
         },
     }
 }
@@ -492,7 +622,7 @@ struct Paused;
 struct MainMenu;
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
-struct ViewingGuide;
+struct Guide;
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
 struct LoseScreen;
@@ -500,6 +630,15 @@ struct LoseScreen;
 #[derive(Component)]
 #[derive(Debug, Copy, Clone)]
 struct MainMenuItem;
+#[derive(Component)]
+#[derive(Debug, Copy, Clone)]
+struct LoseScreenItem;
+#[derive(Component)]
+#[derive(Debug, Copy, Clone)]
+struct RunningObject;
+#[derive(Component)]
+#[derive(Debug, Copy, Clone)]
+struct GuideItem;
 
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone, Default)]
