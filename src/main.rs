@@ -37,8 +37,7 @@ fn main() {
         .insert_resource(Msaa::Sample4)
         .add_plugins((DefaultPlugins, ShapePlugin))
         .add_systems(Startup, (
-            create_wave_counter,
-            create_camera,
+            setup,
             start_on_menu,
         ))
         .add_systems(Update, (
@@ -58,6 +57,7 @@ fn main() {
             handle_lose_screen_input.run_if(resource_exists::<LoseScreen>),
 
             update_player_color.run_if(resource_exists::<Running>),
+            update_player_health_text.run_if(resource_exists::<Running>),
 
             update_player
                 .before(player_ranged_attack)
@@ -66,6 +66,7 @@ fn main() {
             (
                 player_ranged_attack
                     .run_if(input_pressed(MouseButton::Left)),
+                resolve_enemy_projectiles,
                 check_and_resolve_player_death,
             ).run_if(resource_exists::<Running>).chain(),
 
@@ -81,6 +82,12 @@ fn main() {
         .run();
 }
 
+fn setup(mut commands: Commands) {
+    commands.spawn(Camera2dBundle::default());
+    commands.insert_resource(WaveCounter::default());
+    commands.insert_resource(PlayerUpgradeCounter::default());
+}
+
 const ENEMY_COLOR: Srgba = ORANGE_800;
 const ENEMY_RADIUS: f32 = 40.0;
 
@@ -90,7 +97,12 @@ const PLAYER_RADIUS: f32 = 50.0;
 
 const PROJECTILE_RADIUS: f32 = 15.0;
 
-fn menu_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: Commands, main_menu_items: Query<Entity, With<MainMenuItem>>) {
+fn menu_to_running(
+    mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
+    mut wave_counter: ResMut<WaveCounter>,
+    mut commands: Commands,
+    main_menu_items: Query<Entity, With<MainMenuItem>>
+) {
     for id in main_menu_items.iter() {
         commands.entity(id).despawn()
     }
@@ -108,6 +120,8 @@ fn menu_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: Commands
         Fill::color(PLAYER_COLOR_MAX_HP),
         Stroke::new(BLACK, 5.0),
     ));
+
+    wave_counter.0 = 0;
     commands.spawn((
         RunningObject,
         WaveCounterText,
@@ -115,11 +129,35 @@ fn menu_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: Commands
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 top: Val::Percent(2.0),
+                right: Val::Percent(2.0),
+                ..default()
+            }),
+    ));
+
+    player_upgrade_counter.reset();
+    commands.spawn((
+        RunningObject,
+        PlayerUpgradeCounterText,
+        TextBundle::from_section(player_upgrade_counter.display_text(), TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                bottom: Val::Percent(2.0),
                 left: Val::Percent(2.0),
                 ..default()
             }),
     ));
-    wave_counter.0 = 0;
+
+    commands.spawn((
+        RunningObject,
+        PlayerHealthText,
+        TextBundle::from_section("Health: 100 / 100", TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(2.0),
+                left: Val::Percent(2.0),
+                ..default()
+            })
+    ));
 
     commands.remove_resource::<Transition<MainMenu, Running>>();
     commands.insert_resource(Running);
@@ -130,7 +168,9 @@ fn menu_to_guide(mut commands: Commands, entities: Query<Entity, With<MainMenuIt
     You are the green circle (although the color will become more red as you lose health). Enemies, \
     which are orange circles will spawn around you in waves. Your goal is to survive as many waves \
     as possible. To get to the next wave, you will need to kill every enemy. By left clicking and \
-    holding, you will create projectiles which damage enemies. That's really the entire game.\n\n\
+    holding, you will create projectiles which damage enemies.\n\n\
+    You can also upgrade your player by pressing one of the number keys (you get an extra upgrade \
+    after beating each round). The types of upgrades are Health, Attack, and Speed.\n\n\
     Press Escape to return to the home screen.";
 
     for id in entities.iter() {
@@ -162,7 +202,12 @@ fn guide_to_menu(mut commands: Commands, entities: Query<Entity, With<GuideItem>
     start_on_menu(commands);
 }
 
-fn lose_screen_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: Commands, entities: Query<Entity, With<LoseScreenItem>>) {
+fn lose_screen_to_running(
+    mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
+    mut wave_counter: ResMut<WaveCounter>,
+    mut commands: Commands,
+    entities: Query<Entity, With<LoseScreenItem>>,
+) {
     for entity in entities.iter() {
         commands.entity(entity).despawn();
     }
@@ -180,6 +225,8 @@ fn lose_screen_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: C
         Fill::color(PLAYER_COLOR_MAX_HP),
         Stroke::new(BLACK, 5.0),
     ));
+
+    wave_counter.0 = 0;
     commands.spawn((
         RunningObject,
         WaveCounterText,
@@ -187,11 +234,35 @@ fn lose_screen_to_running(mut wave_counter: ResMut<WaveCounter>, mut commands: C
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 top: Val::Percent(2.0),
+                right: Val::Percent(2.0),
+                ..default()
+            }),
+    ));
+
+    player_upgrade_counter.reset();
+    commands.spawn((
+        RunningObject,
+        PlayerUpgradeCounterText,
+        TextBundle::from_section(player_upgrade_counter.display_text(), TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                bottom: Val::Percent(2.0),
                 left: Val::Percent(2.0),
                 ..default()
             }),
     ));
-    wave_counter.0 = 0;
+
+    commands.spawn((
+        RunningObject,
+        PlayerHealthText,
+        TextBundle::from_section("Health: 100 / 100", TextStyle::default())
+            .with_style(Style {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(2.0),
+                left: Val::Percent(2.0),
+                ..default()
+            })
+    ));
 
     commands.remove_resource::<Transition<LoseScreen, Running>>();
     commands.insert_resource(Running);
@@ -250,10 +321,41 @@ fn handle_menu_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>
     }
 }
 
-fn handle_running_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>) {
+fn handle_running_input(
+    mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
+    mut player_upgrade_counter_text: Query<&mut Text, With<PlayerUpgradeCounterText>>,
+    mut commands: Commands,
+    mut player: Query<(&mut PlayerStats, &mut Health), With<Player>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+) {
     if keyboard.just_pressed(KeyCode::Escape) {
         commands.remove_resource::<Running>();
         commands.insert_resource(Transition::new(Running, Paused));
+    }
+
+    if player_upgrade_counter.unused_upgrades > 0 {
+        let upgrade: Option<PlayerUpgrade>;
+
+        if keyboard.just_pressed(KeyCode::Digit1) {
+            upgrade = Some(PlayerUpgrade::HealthUpgrade);
+        } else if keyboard.just_pressed(KeyCode::Digit2) {
+            upgrade = Some(PlayerUpgrade::AttackUpgrade);
+        } else if keyboard.just_pressed(KeyCode::Digit3) {
+            upgrade = Some(PlayerUpgrade::SpeedUpgrade);
+        } else {
+            upgrade = None;
+        }
+
+        if let Some(upgrade) = upgrade {
+            player_upgrade_counter.unused_upgrades -= 1;
+            player_upgrade_counter.add_upgrade(upgrade);
+
+            *player_upgrade_counter_text.single_mut() =
+                Text::from_section(player_upgrade_counter.display_text(), TextStyle::default());
+
+            let (mut stats, mut health) = player.single_mut();
+            apply_player_upgrade(stats.into_inner(), health.into_inner(), upgrade);
+        }
     }
 }
 
@@ -282,11 +384,6 @@ fn handle_lose_screen_input(mut commands: Commands, keyboard: Res<ButtonInput<Ke
     }
 }
 
-
-fn create_camera(mut commands: Commands) {
-    commands.spawn(Camera2dBundle::default());
-}
-
 const MAIN_MENU_TEXT: &'static str =
 "Welcome to game-jam-entry!\n
 In this game your goal is to survive endless waves of enemies for as long as possible.\n
@@ -310,16 +407,20 @@ fn start_on_menu(mut commands: Commands) {
     ));
 }
 
-fn create_wave_counter(mut commands: Commands) {
-    commands.insert_resource(WaveCounter::default());
-}
-
 fn remove_dead_enemies(mut commands: Commands, mut query: Query<(Entity, &Health), With<Enemy>>) {
     for (id, hp) in query.iter() {
         if hp.current_health() == 0 {
             commands.entity(id).despawn();
         }
     }
+}
+
+fn update_player_health_text(mut player_health_text: Query<&mut Text, With<PlayerHealthText>>, player_health: Query<&Health, With<Player>>) {
+    let player_health = player_health.single();
+    *player_health_text.single_mut() = Text::from_section(
+        format!("Health: {}/{}", player_health.current_hp, player_health.max_hp),
+        TextStyle::default(),
+    );
 }
 
 fn update_player(
@@ -361,26 +462,39 @@ fn enemy_update_and_attack(
     time: Res<Time>,
     mut commands: Commands,
     mut player: Query<(&Position, &mut Health), (With<Player>, Without<Enemy>)>,
-    mut query: Query<(&EnemyStats, &mut EnemyState, &mut Position, &mut Path), (With<Enemy>, Without<Player>)>
+    mut query: Query<(Entity, &EnemyStats, &mut EnemyState, &mut Position, &mut Path), (With<Enemy>, Without<Player>)>
 ) {
     let (player_pos, mut player_hp) = player.single_mut();
     let dt = time.delta();
-    for (stats, mut state, mut pos, mut path) in query.iter_mut() {
+    for (id, stats, mut state, mut pos, mut path) in query.iter_mut() {
 
         if state.close_attack_timer.finished() && pos.distance(player_pos) <= ENEMY_RADIUS + PLAYER_RADIUS {
             player_hp.damage(stats.close_attack_damage);
             state.close_attack_timer.reset();
         } else { state.close_attack_timer.tick(dt); }
 
-        if stats.ranged_attack_damage > 0 && state.ranged_attack_timer.finished() {
-            commands.spawn(todo!("Enemy ranged attack not implemented yet"));
-            state.ranged_attack_timer.reset();
-        } else { state.ranged_attack_timer.tick(dt); }
-
         let base_movement = (to_vec2!((pos.x, pos.y)) - to_vec2!(player_pos)).normalize_or_zero();
         let move_vector = -stats.movement_speed * base_movement * time.delta_seconds();
         *pos = (to_vec2!((pos.x, pos.y)) + (move_vector)).into();
         *path = circle!(ENEMY_RADIUS, *pos).path;
+
+        if stats.ranged_attack_damage > 0 && state.ranged_attack_timer.finished() {
+            commands.spawn((
+                RunningObject,
+                EnemyProjectile,
+                Projectile {
+                    damage: stats.ranged_attack_damage,
+                    velocity: -base_movement * stats.ranged_attack_speed,
+                    location: to_vec2!(*pos),
+                    pierce_left: 1,
+                    last_entity_hit: id,
+                },
+                circle!(PROJECTILE_RADIUS, *pos),
+                Fill::color(ORANGE_RED),
+                Stroke::new(BLACK, 5f32),
+            ));
+            state.ranged_attack_timer.reset();
+        } else { state.ranged_attack_timer.tick(dt); }
     }
 }
 
@@ -429,6 +543,33 @@ fn resolve_player_projectiles(
                 }
                 projectile.last_entity_hit = *enemy_id;
             }
+        }
+    }
+}
+
+fn resolve_enemy_projectiles(
+    mut commands: Commands,
+    mut player: Query<(&Position, &mut Health), With<Player>>,
+    mut query: Query<(Entity, &mut Projectile), With<EnemyProjectile>>,
+) {
+    let mut player = player.single_mut();
+    let (player_loc, mut player_hp) = (to_vec2!(player.0), player.1);
+
+    for (id, mut projectile) in query.iter_mut() {
+        let approx_x = projectile.location.x as isize;
+        let approx_y = projectile.location.y as isize;
+
+        if (approx_x - player_loc.x as isize).abs() > 3000
+            || (approx_y - player_loc.y as isize).abs() > 3000 {
+            commands.entity(id).despawn();
+            continue;
+        }
+
+        const COLLIDE_DISTANCE: isize = PLAYER_RADIUS as isize + PROJECTILE_RADIUS as isize;
+
+        if COLLIDE_DISTANCE > projectile.location.distance(player_loc) as isize {
+            player_hp.damage(projectile.damage);
+            commands.entity(id).despawn();
         }
     }
 }
@@ -508,8 +649,10 @@ fn update_player_color(mut query: Query<(&mut Fill, &Health), With<Player>>) {
 
 fn spawn_wave_if_no_enemies(
     mut commands: Commands,
+    mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
+    mut player_upgrade_counter_text: Query<&mut Text, (With<PlayerUpgradeCounterText>, Without<WaveCounterText>)>,
     mut wave_counter: ResMut<WaveCounter>,
-    mut wave_counter_text: Query<&mut Text, With<WaveCounterText>>,
+    mut wave_counter_text: Query<&mut Text, (With<WaveCounterText>, Without<PlayerUpgradeCounterText>)>,
     player_pos: Query<&Position, With<Player>>,
     query: Query<&Enemy>
 ) {
@@ -526,14 +669,17 @@ fn spawn_wave_if_no_enemies(
     wave_counter.0 += 1;
     let mut wave_counter_text = wave_counter_text.single_mut();
     *wave_counter_text = Text::from_section(format!("Wave {}", wave_counter.0), TextStyle::default());
+    player_upgrade_counter.add_unused();
+    *player_upgrade_counter_text.single_mut() =
+        Text::from_section(player_upgrade_counter.display_text(), TextStyle::default());
 
     let enemies_to_spawn = 8 + (2 * wave_counter.0);
     const ENEMY_DISTANCE_MIN: f32 = 400f32;
-    const ENEMY_DISTANCE_MAX: f32 = 800f32;
-    const ENEMY_DISTANCE_DIFF: f32 = ENEMY_DISTANCE_MAX - ENEMY_DISTANCE_MIN;
+    let enemy_distance_max: f32 = 800f32 + (20f32 * wave_counter.0 as f32);
+    let enemy_distance_diff = enemy_distance_max - ENEMY_DISTANCE_MIN;
     for _ in 0..enemies_to_spawn {
         let angle_radians: f32 = random::<f32>() * f32::PI() * 2.0;
-        let distance: f32 = ENEMY_DISTANCE_MIN + (random::<f32>() * ENEMY_DISTANCE_DIFF);
+        let distance: f32 = ENEMY_DISTANCE_MIN + (random::<f32>() * enemy_distance_diff);
         let player_pos = player_pos.single();
         let pos = Position::new(
             player_pos.x + (angle_radians.cos() * distance),
@@ -553,7 +699,7 @@ fn spawn_wave_if_no_enemies(
                 * f32::powi(1.05, (wave_counter.0 - 10) as i32) as usize
             },
             1.5,
-            250.0 * f32::powi(1.1, wave_counter.0 as i32),
+            200.0 * f32::powi(1.05, wave_counter.0 as i32),
             75.0 * f32::powi(1.05, wave_counter.0 as i32),
         );
         commands.spawn((
@@ -563,7 +709,7 @@ fn spawn_wave_if_no_enemies(
             pos,
             Health::new(24 + (2*wave_counter.0 as usize)),
             stats,
-            EnemyState::from_enemy_stats(stats),
+            EnemyState::from_enemy_stats(stats).with_random_timers(),
             circle!(ENEMY_RADIUS, pos),
             Fill::color(ENEMY_COLOR),
             Stroke::new(BLACK, 3.0),
@@ -571,45 +717,25 @@ fn spawn_wave_if_no_enemies(
     }
 }
 
-// new
 fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: PlayerUpgrade) {
     match upgrade {
         PlayerUpgrade::AttackUpgrade => {
             stats.ranged_attack_damage += 2;
             stats.ranged_attack_cooldown *= 0.95;
-            stats.close_attack_damage += 5;
+            stats.ranged_attack_pierce += 1;
+            stats.close_attack_damage += 10;
         },
         PlayerUpgrade::HealthUpgrade => {
-            health.add_max_hp(10);
+            health.add_max_hp(20);
             health.heal(health.max_health() / 5);
-            stats.heal_per_second += 2;
+            stats.heal_per_second += 3;
         },
         PlayerUpgrade::SpeedUpgrade => {
-            stats.movement_speed *= 1.2;
-            stats.ranged_attack_speed *= 1.3;
+            stats.movement_speed *= 1.15;
+            stats.ranged_attack_speed *= 1.2;
         },
     }
 }
-
-/* old
-fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: PlayerUpgrade) {
-    match upgrade {
-        PlayerUpgrade::InstantHeal => health.heal(health.max_health() / 4),
-        PlayerUpgrade::HealOverTime => stats.heal_per_second += 2,
-        PlayerUpgrade::MaxHp => health.add_max_hp(15),
-
-        PlayerUpgrade::CloseAttackCooldown => stats.close_attack_cooldown *= 0.8,
-        PlayerUpgrade::CloseAttackDamage => stats.close_attack_damage += 5,
-
-        PlayerUpgrade::RangedAttackCooldown => stats.ranged_attack_cooldown *= 0.9,
-        PlayerUpgrade::RangedAttackDamage => stats.ranged_attack_damage += 3,
-        PlayerUpgrade::RangedAttackPierce => stats.ranged_attack_pierce += 2,
-        PlayerUpgrade::RangedAttackSpeed => stats.ranged_attack_speed *= 1.25,
-
-        PlayerUpgrade::MoveSpeed => stats.movement_speed *= 1.15,
-    }
-}
-*/
 
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
@@ -652,6 +778,22 @@ struct WaveCounter(pub isize);
 #[derive(Component)]
 #[derive(Debug, Copy, Clone)]
 struct WaveCounterText;
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone)]
+struct PlayerHealthText;
+
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone, Default)]
+struct PlayerUpgradeCounter {
+    pub attack_upgrades: usize,
+    pub health_upgrades: usize,
+    pub speed_upgrades: usize,
+    pub unused_upgrades: usize,
+}
+#[derive(Component)]
+#[derive(Debug, Copy, Clone)]
+struct PlayerUpgradeCounterText;
 
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, Default)]
@@ -746,31 +888,41 @@ impl<From: Resource, To: Resource> Transition<From, To> {
     }
 }
 
+impl PlayerUpgradeCounter {
+    fn add_unused(&mut self) {
+        self.unused_upgrades += 1;
+    }
+
+    fn add_upgrade(&mut self, player_upgrade: PlayerUpgrade) {
+        match player_upgrade {
+            PlayerUpgrade::HealthUpgrade => self.health_upgrades += 1,
+            PlayerUpgrade::SpeedUpgrade => self.speed_upgrades += 1,
+            PlayerUpgrade::AttackUpgrade => self.attack_upgrades += 1,
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn display_text(&self) -> String {
+        format!(
+            "Unused upgrades: {}\n\
+            Health upgrades [1]: {}\n\
+            Attack upgrades [2]: {}\n\
+            Speed upgrades [3]: {}\n",
+            self.unused_upgrades,
+            self.health_upgrades,
+            self.attack_upgrades,
+            self.speed_upgrades,
+        )
+    }
+}
+
 impl Position {
     pub fn new(x: f32, y: f32) -> Self {
         Self { x, y }
     }
-    pub fn x_pos(&self) -> f32 {
-        self.x
-    }
-    pub fn y_pos(&self) -> f32 {
-        self.y
-    }
-    pub fn set_x(&mut self, new_x: f32) {
-        self.x = new_x;
-    }
-    pub fn set_y(&mut self, new_y: f32) {
-        self.y = new_y;
-    }
-    pub fn swap_x(&mut self, mut new_x: f32) -> f32 {
-        std::mem::swap(&mut self.x, &mut new_x);
-        new_x
-    }
-    pub fn swap_y(&mut self, mut new_y: f32) -> f32 {
-        std::mem::swap(&mut self.y, &mut new_y);
-        new_y
-    }
-
     fn distance(&self, other: &Self) -> f32 {
         let this: Vec2 = self.into();
         let other: Vec2 = other.into();
@@ -826,6 +978,22 @@ impl EnemyState {
                 Timer::from_seconds(enemy_stats.ranged_attack_cooldown, TimerMode::Repeating),
         }
     }
+
+    fn randomize_timers(&mut self) {
+        use std::time::Duration;
+
+        self.close_attack_timer.set_elapsed(Duration::from_secs_f32(
+            random::<f32>() * self.close_attack_timer.duration().as_secs_f32()
+        ));
+        self.ranged_attack_timer.set_elapsed(Duration::from_secs_f32(
+            random::<f32>() * self.ranged_attack_timer.duration().as_secs_f32()
+        ));
+    }
+
+    fn with_random_timers(mut self) -> Self {
+        self.randomize_timers();
+        self
+    }
 }
 
 impl Health {
@@ -848,7 +1016,7 @@ impl Health {
     /// If you want to be able to heal over the maximum health,
     /// use `Health::add_health()`.
     pub fn heal(&mut self, heal_amount: usize) {
-        self.current_hp = self.max_hp.max(self.current_hp + heal_amount)
+        self.current_hp = self.max_hp.min(self.current_hp + heal_amount)
     }
 
     /// Heals an amount of health.
