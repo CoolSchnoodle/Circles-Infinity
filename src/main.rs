@@ -39,7 +39,7 @@ fn main() {
         .add_systems(Startup, (
             setup,
             start_on_menu,
-        ))
+        ).chain())
         .add_systems(Update, (
             guide_to_menu.run_if(resource_exists::<Transition<Guide, MainMenu>>),
             menu_to_guide.run_if(resource_exists::<Transition<MainMenu, Guide>>),
@@ -86,6 +86,7 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2dBundle::default());
     commands.insert_resource(WaveCounter::default());
     commands.insert_resource(PlayerUpgradeCounter::default());
+    commands.insert_resource(HighScore::default());
 }
 
 const ENEMY_COLOR: Srgba = ORANGE_800;
@@ -129,7 +130,7 @@ fn menu_to_running(
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 top: Val::Percent(2.0),
-                right: Val::Percent(2.0),
+                left: Val::Percent(2.0),
                 ..default()
             }),
     ));
@@ -153,7 +154,7 @@ fn menu_to_running(
         TextBundle::from_section("Health: 100 / 100", TextStyle::default())
             .with_style(Style {
                 position_type: PositionType::Absolute,
-                top: Val::Percent(2.0),
+                top: Val::Percent(5.0),
                 left: Val::Percent(2.0),
                 ..default()
             })
@@ -164,7 +165,7 @@ fn menu_to_running(
 }
 
 fn menu_to_guide(mut commands: Commands, entities: Query<Entity, With<MainMenuItem>>) {
-    const GUIDE_TEXT: &'static str = "Oh, you want to actually know how to play the game? Fine.\n\n\
+    const GUIDE_TEXT: &'static str = "Welcome to the guide, where you learn how the game works.\n\n\
     You are the green circle (although the color will become more red as you lose health). Enemies, \
     which are orange circles will spawn around you in waves. Your goal is to survive as many waves \
     as possible. To get to the next wave, you will need to kill every enemy. By left clicking and \
@@ -193,13 +194,13 @@ fn menu_to_guide(mut commands: Commands, entities: Query<Entity, With<MainMenuIt
     commands.insert_resource(Guide);
 }
 
-fn guide_to_menu(mut commands: Commands, entities: Query<Entity, With<GuideItem>>) {
+fn guide_to_menu(mut commands: Commands, entities: Query<Entity, With<GuideItem>>, high_score: Res<HighScore>) {
     for id in entities.iter() {
         commands.entity(id).despawn();
     }
 
     commands.remove_resource::<Transition<Guide, MainMenu>>();
-    start_on_menu(commands);
+    start_on_menu(commands, high_score);
 }
 
 fn lose_screen_to_running(
@@ -234,7 +235,7 @@ fn lose_screen_to_running(
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 top: Val::Percent(2.0),
-                right: Val::Percent(2.0),
+                left: Val::Percent(2.0),
                 ..default()
             }),
     ));
@@ -258,7 +259,7 @@ fn lose_screen_to_running(
         TextBundle::from_section("Health: 100 / 100", TextStyle::default())
             .with_style(Style {
                 position_type: PositionType::Absolute,
-                top: Val::Percent(2.0),
+                top: Val::Percent(5.0),
                 left: Val::Percent(2.0),
                 ..default()
             })
@@ -268,17 +269,18 @@ fn lose_screen_to_running(
     commands.insert_resource(Running);
 }
 
-fn lose_screen_to_menu(mut commands: Commands, entities: Query<Entity, With<LoseScreenItem>>) {
+fn lose_screen_to_menu(mut commands: Commands, entities: Query<Entity, With<LoseScreenItem>>, high_score: Res<HighScore>) {
     for entity in entities.iter() {
         commands.entity(entity).despawn();
     }
 
-    commands.remove_resource::<LoseScreen>();
-    start_on_menu(commands);
+    commands.remove_resource::<Transition<LoseScreen, MainMenu>>();
+    start_on_menu(commands, high_score);
 }
 
 fn running_to_lose_screen(
     wave_counter: Res<WaveCounter>,
+    mut high_score: ResMut<HighScore>,
     mut commands: Commands,
     entities: Query<Entity, With<RunningObject>>,
 ) {
@@ -286,25 +288,50 @@ fn running_to_lose_screen(
         commands.entity(entity).despawn();
     }
 
-    commands.spawn((
-        LoseScreenItem,
-        TextBundle::from_section(format!(
-                "You lost on wave {}.\n\n\
-                Thanks for playing! Press enter to play again. \
-                I would let you go to the main menu but that crashes the game for some reason...",
-                wave_counter.0
+    if wave_counter.0 <= high_score.0 {
+        commands.spawn((
+            LoseScreenItem,
+            TextBundle::from_section(format!(
+                    "You lost on wave {}, your best wave is {}.\n\n\
+                    Thanks for playing! Press enter to play again, \
+                    or press Escape to return to the main menu.",
+                    wave_counter.0,
+                    high_score.0,
+                ), TextStyle::default())
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    align_self: AlignSelf::Center,
+                    align_content: AlignContent::Center,
+                    top: Val::Percent(25.0),
+                    bottom: Val::Percent(10.0),
+                    left: Val::Percent(10.0),
+                    right: Val::Percent(10.0),
+                    ..default()
+                }),
+        ));
+    } else {
+        commands.spawn((
+            LoseScreenItem,
+            TextBundle::from_section(format!(
+                "New high score: {}! Your previous best wave was {}.\n\n\
+                Thanks for playing! Press enter to play again, \
+                or press Escape to return to the main menu.",
+                wave_counter.0,
+                high_score.0,
             ), TextStyle::default())
-            .with_style(Style {
-                position_type: PositionType::Absolute,
-                align_self: AlignSelf::Center,
-                align_content: AlignContent::Center,
-                top: Val::Percent(25.0),
-                bottom: Val::Percent(10.0),
-                left: Val::Percent(10.0),
-                right: Val::Percent(10.0),
-                ..default()
-            }),
-    ));
+                .with_style(Style {
+                    position_type: PositionType::Absolute,
+                    align_self: AlignSelf::Center,
+                    align_content: AlignContent::Center,
+                    top: Val::Percent(25.0),
+                    bottom: Val::Percent(10.0),
+                    left: Val::Percent(10.0),
+                    right: Val::Percent(10.0),
+                    ..default()
+                }),
+        ));
+        high_score.0 = wave_counter.0;
+    }
 
     commands.remove_resource::<Transition<Running, LoseScreen>>();
     commands.insert_resource(LoseScreen);
@@ -328,10 +355,13 @@ fn handle_running_input(
     mut player: Query<(&mut PlayerStats, &mut Health), With<Player>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
+    // didn't feel like implementing pause menu
+    /*
     if keyboard.just_pressed(KeyCode::Escape) {
         commands.remove_resource::<Running>();
         commands.insert_resource(Transition::new(Running, Paused));
     }
+    */
 
     if player_upgrade_counter.unused_upgrades > 0 {
         let upgrade: Option<PlayerUpgrade>;
@@ -382,18 +412,25 @@ fn handle_lose_screen_input(mut commands: Commands, keyboard: Res<ButtonInput<Ke
         commands.remove_resource::<LoseScreen>();
         commands.insert_resource(Transition::new(LoseScreen, Running))
     }
+
+    if keyboard.pressed(KeyCode::Escape) {
+        commands.remove_resource::<LoseScreen>();
+        commands.insert_resource(Transition::new(LoseScreen, MainMenu));
+    }
 }
 
-const MAIN_MENU_TEXT: &'static str =
-"Welcome to game-jam-entry!\n
-In this game your goal is to survive endless waves of enemies for as long as possible.\n
-To learn how to play, press the G key to view a guide.\n
-If you know how to play, you can press the Enter/Return key to jump right into a game.";
-fn start_on_menu(mut commands: Commands) {
+fn start_on_menu(mut commands: Commands, high_score: Res<HighScore>) {
     commands.insert_resource(MainMenu);
     commands.spawn((
         MainMenuItem,
-        TextBundle::from_section(MAIN_MENU_TEXT, TextStyle::default())
+        TextBundle::from_section(format!(
+            "Welcome to game-jam-entry!\n\n\
+            In this game your goal is to survive endless waves of enemies for as long as possible.\n\n\
+            To learn how to play, press the G key to view a guide.\n\n\
+            If you know how to play, you can press the Enter/Return key to jump right into a game.\n\n\
+            The highest wave you've reached is {}.",
+            high_score.0
+        ), TextStyle::default())
             .with_style(Style {
                 position_type: PositionType::Absolute,
                 align_self: AlignSelf::Center,
@@ -653,7 +690,7 @@ fn spawn_wave_if_no_enemies(
     mut player_upgrade_counter_text: Query<&mut Text, (With<PlayerUpgradeCounterText>, Without<WaveCounterText>)>,
     mut wave_counter: ResMut<WaveCounter>,
     mut wave_counter_text: Query<&mut Text, (With<WaveCounterText>, Without<PlayerUpgradeCounterText>)>,
-    player_pos: Query<&Position, With<Player>>,
+    mut player: Query<(&Position, &mut Health, &PlayerStats), With<Player>>,
     query: Query<&Enemy>
 ) {
     use num_traits::float::FloatConst;
@@ -669,9 +706,13 @@ fn spawn_wave_if_no_enemies(
     wave_counter.0 += 1;
     let mut wave_counter_text = wave_counter_text.single_mut();
     *wave_counter_text = Text::from_section(format!("Wave {}", wave_counter.0), TextStyle::default());
+
     player_upgrade_counter.add_unused();
     *player_upgrade_counter_text.single_mut() =
         Text::from_section(player_upgrade_counter.display_text(), TextStyle::default());
+
+    let (player_pos, mut player_health, player_stats) = player.single_mut();
+    player_health.heal(player_stats.end_of_round_heal);
 
     let enemies_to_spawn = 8 + (2 * wave_counter.0);
     const ENEMY_DISTANCE_MIN: f32 = 400f32;
@@ -680,7 +721,6 @@ fn spawn_wave_if_no_enemies(
     for _ in 0..enemies_to_spawn {
         let angle_radians: f32 = random::<f32>() * f32::PI() * 2.0;
         let distance: f32 = ENEMY_DISTANCE_MIN + (random::<f32>() * enemy_distance_diff);
-        let player_pos = player_pos.single();
         let pos = Position::new(
             player_pos.x + (angle_radians.cos() * distance),
             player_pos.y + (angle_radians.sin() * distance),
@@ -728,7 +768,7 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
         PlayerUpgrade::HealthUpgrade => {
             health.add_max_hp(20);
             health.heal(health.max_health() / 5);
-            stats.heal_per_second += 3;
+            stats.end_of_round_heal += 5;
         },
         PlayerUpgrade::SpeedUpgrade => {
             stats.movement_speed *= 1.15;
@@ -778,6 +818,10 @@ struct WaveCounter(pub isize);
 #[derive(Component)]
 #[derive(Debug, Copy, Clone)]
 struct WaveCounterText;
+
+#[derive(Resource)]
+#[derive(Debug, Copy, Clone, Default)]
+struct HighScore(pub isize);
 
 #[derive(Component)]
 #[derive(Debug, Copy, Clone)]
@@ -843,7 +887,7 @@ struct PlayerStats {
     ranged_attack_speed: f32,
 
     movement_speed: f32,
-    heal_per_second: usize,
+    end_of_round_heal: usize,
 }
 
 #[derive(Component)]
@@ -1117,7 +1161,7 @@ impl Default for PlayerStats {
             ranged_attack_speed: 350f32,
 
             movement_speed: 100f32,
-            heal_per_second: 5usize,
+            end_of_round_heal: 10usize,
         }
     }
 }
