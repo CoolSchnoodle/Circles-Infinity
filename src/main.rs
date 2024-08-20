@@ -35,7 +35,10 @@ macro_rules! to_vec2 {
 fn main() {
     App::new()
         .insert_resource(Msaa::Sample4)
-        .add_plugins((DefaultPlugins, ShapePlugin))
+        .add_plugins((
+            DefaultPlugins,
+            ShapePlugin,
+        ))
         .add_systems(Startup, (
             setup,
             start_on_menu,
@@ -63,6 +66,12 @@ fn main() {
                 .before(player_ranged_attack)
                 .before(enemy_update_and_attack)
                 .run_if(resource_exists::<Running>),
+
+            (
+                update_power_ups,
+                create_power_ups,
+                collect_power_ups
+            ).run_if(resource_exists::<Running>).chain(),
             (
                 player_ranged_attack
                     .run_if(input_pressed(MouseButton::Left)),
@@ -87,6 +96,7 @@ fn setup(mut commands: Commands) {
     commands.insert_resource(WaveCounter::default());
     commands.insert_resource(PlayerUpgradeCounter::default());
     commands.insert_resource(HighScore::default());
+    commands.insert_resource(PowerUpSpawnTimer::default())
 }
 
 const ENEMY_COLOR: Srgba = ORANGE_800;
@@ -172,6 +182,8 @@ fn menu_to_guide(mut commands: Commands, entities: Query<Entity, With<MainMenuIt
     holding, you will create projectiles which damage enemies.\n\n\
     You can also upgrade your player by pressing one of the number keys (you get an extra upgrade \
     after beating each round). The types of upgrades are Health, Attack, and Speed.\n\n\
+    Brightly colored, pulsating powerups will periodically spawn. Collecting these will give you \
+    temporary boosts!\n\n\
     Press Escape to return to the home screen.";
 
     for id in entities.iter() {
@@ -351,7 +363,6 @@ fn handle_menu_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>
 fn handle_running_input(
     mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
     mut player_upgrade_counter_text: Query<&mut Text, With<PlayerUpgradeCounterText>>,
-    mut commands: Commands,
     mut player: Query<(&mut PlayerStats, &mut Health), With<Player>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
@@ -472,25 +483,35 @@ fn update_player(
     let s = keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown);
     let d = keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight);
 
-    let vertical_movement = if w && !s { 1f32 } else if s && !w { -1f32 } else { 0f32 };
-    let horizontal_movement = if d && !a { 1f32 } else if a && !d { -1f32 } else { 0f32 };
+    let mut vertical_movement = if w && !s { 1f32 } else if s && !w { -1f32 } else { 0f32 };
+    let mut horizontal_movement = if d && !a { 1f32 } else if a && !d { -1f32 } else { 0f32 };
+    if vertical_movement != 0.0 && horizontal_movement != 0.0 {
+        let sqrt_2 = 2f32.sqrt();
+        vertical_movement /= sqrt_2;
+        horizontal_movement /= sqrt_2;
+    }
 
     let (mut pos, mut path, stats, mut state) = player.single_mut();
     let mut transform = camera_transform.single_mut();
     let dt = time.delta_seconds();
-    pos.y += vertical_movement * dt * stats.movement_speed;
-    pos.x += horizontal_movement * dt * stats.movement_speed;
+
+    if state.boost_time_left > 0.0 {
+        state.boost_time_left -= time.delta_seconds();
+        state.boost_time_left = f32::max(state.boost_time_left, 0.0);
+    }
+
+    let speed_multiplier: f32 = dt * if state.boost_time_left > 0.0 { 2.0 } else { 1.0 };
+    pos.y += vertical_movement * speed_multiplier * stats.movement_speed;
+    pos.x += horizontal_movement * speed_multiplier * stats.movement_speed;
 
     *path = circle!(PLAYER_RADIUS, *pos).path;
     transform.translation = transform.translation.lerp(Vec3::new(pos.x, pos.y, transform.translation.z), dt * 3.0);
 
     // update timers
-    if state.heal_timer.finished() { state.heal_timer.reset() }
     if state.close_attack_timer.finished() { state.close_attack_timer.reset() }
     if state.ranged_attack_timer.finished() { state.ranged_attack_timer.reset() }
 
     let dt = time.delta();
-    state.heal_timer.tick(dt);
     state.close_attack_timer.tick(dt);
     state.ranged_attack_timer.tick(dt);
 }
@@ -611,6 +632,80 @@ fn resolve_enemy_projectiles(
     }
 }
 
+fn create_power_ups(
+    mut commands: Commands,
+    mut power_up_spawn_timer: ResMut<PowerUpSpawnTimer>,
+    time: Res<Time>,
+    player_pos: Query<&Position, With<Player>>
+) {
+    use num_traits::float::FloatConst;
+
+    const PROJECTILE_DIST_MIN: f32 = 300f32;
+    const PROJECTILE_DIST_MAX: f32 = 800f32;
+    let projectile_dist_diff = PROJECTILE_DIST_MAX - PROJECTILE_DIST_MIN;
+
+    power_up_spawn_timer.0.tick(time.delta());
+    if !power_up_spawn_timer.0.just_finished() {
+        return;
+    }
+    power_up_spawn_timer.0.reset();
+
+    let player_pos = player_pos.single();
+    let distance = (random::<f32>() * projectile_dist_diff) + PROJECTILE_DIST_MIN;
+    let angle_radians = random::<f32>() * f32::PI() * 2.0;
+    let pos = Position::new(
+        player_pos.x + (angle_radians.cos() * distance),
+        player_pos.y + (angle_radians.sin() * distance),
+    );
+
+    let power_up_type = PowerUpType::random();
+
+    commands.spawn((
+        RunningObject,
+        PowerUp { time_since_created: 0.0 },
+        power_up_type,
+        pos,
+        circle!(15.0, pos),
+        Fill::color(power_up_type.color()),
+        Stroke::new(power_up_type.color().with_luminance(0.3), 2.0),
+    ));
+}
+
+fn power_up_radius(time_since_created: f32) -> f32 {
+    use std::ops::Mul;
+    time_since_created.mul(5.0).sin().mul(3.0) + 15.0
+}
+
+fn update_power_ups(time: Res<Time>, mut query: Query<(&mut PowerUp, &Position, &mut Path)>) {
+    let dt = time.delta_seconds();
+    for (mut power_up, pos, mut path) in query.iter_mut() {
+        power_up.time_since_created += dt;
+        *path = circle!(power_up_radius(power_up.time_since_created), pos).path;
+    }
+}
+
+fn collect_power_ups(
+    mut commands: Commands,
+    mut player: Query<(&Position, &mut PlayerState, &mut Health), With<Player>>,
+    power_ups: Query<(Entity, &Position, &PowerUp, &PowerUpType), With<PowerUp>>
+) {
+    let (player_pos, mut player_state, mut player_health) = player.single_mut();
+    let player_pos = to_vec2!(player_pos);
+    for (id, pos, power_up, power_up_type) in power_ups.iter() {
+        let power_up_radius  = power_up_radius(power_up.time_since_created);
+        if to_vec2!(pos).distance(player_pos) < PLAYER_RADIUS + power_up_radius {
+            match power_up_type {
+                PowerUpType::Heal => {
+                    let heal_amount = player_health.max_hp / 5;
+                    player_health.heal(heal_amount);
+                },
+                PowerUpType::Boost => player_state.boost_time_left += 3.0,
+            };
+            commands.entity(id).despawn();
+        }
+    }
+}
+
 fn player_ranged_attack(
     mut commands: Commands,
     window: Query<&Window>,
@@ -674,7 +769,7 @@ fn update_player_color(mut query: Query<(&mut Fill, &Health), With<Player>>) {
     let health_percent = (health.current_health() as f32) / (health.max_health() as f32);
 
     fn mix(min: f32, max: f32, percent: f32) -> f32 {
-        return (min * (1.0 - percent)) + (max * percent)
+        (min * (1.0 - percent)) + (max * percent)
     }
 
     fill.color = Srgba::rgb(
@@ -749,7 +844,7 @@ fn spawn_wave_if_no_enemies(
             pos,
             Health::new(24 + (2*wave_counter.0 as usize)),
             stats,
-            EnemyState::from_enemy_stats(stats).with_random_timers(),
+            EnemyState::from_enemy_stats(stats).with_random_ranged_timer(),
             circle!(ENEMY_RADIUS, pos),
             Fill::color(ENEMY_COLOR),
             Stroke::new(BLACK, 3.0),
@@ -768,7 +863,7 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
         PlayerUpgrade::HealthUpgrade => {
             health.add_max_hp(20);
             health.heal(health.max_health() / 5);
-            stats.end_of_round_heal += 5;
+            stats.end_of_round_heal += 4;
         },
         PlayerUpgrade::SpeedUpgrade => {
             stats.movement_speed *= 1.15;
@@ -871,6 +966,21 @@ enum PlayerUpgrade {
     SpeedUpgrade
 }
 
+#[derive(Resource)]
+#[derive(Debug, Clone)]
+struct PowerUpSpawnTimer(pub Timer);
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct PowerUp { pub time_since_created: f32 }
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+enum PowerUpType {
+    Heal,
+    Boost,
+}
+
 #[derive(Component)]
 #[derive(Debug, Copy, Clone, PartialEq, Default)]
 struct Position { pub x: f32, pub y: f32 }
@@ -895,8 +1005,7 @@ struct PlayerStats {
 struct PlayerState {
     close_attack_timer: Timer,
     ranged_attack_timer: Timer,
-    heal_timer: Timer,
-    facing_radians: f32,
+    boost_time_left: f32,
 }
 
 #[derive(Component)]
@@ -929,6 +1038,29 @@ struct Health {
 impl<From: Resource, To: Resource> Transition<From, To> {
     fn new(_from: From, _to: To) -> Self {
         Self { _make_the_compiler_happy: std::marker::PhantomData }
+    }
+}
+
+impl Default for PowerUpSpawnTimer {
+    fn default() -> Self {
+        Self(Timer::from_seconds(4f32, TimerMode::Repeating))
+    }
+}
+
+impl PowerUpType {
+    fn color(&self) -> Srgba {
+        match self {
+            PowerUpType::Heal => PINK_600,
+            PowerUpType::Boost => YELLOW_400,
+        }
+    }
+
+    fn random() -> Self {
+        match random::<u8>() % 2 {
+            0 => PowerUpType::Heal,
+            1 => PowerUpType::Boost,
+            _ => unreachable!("any number mod 2 is either 0 or 1"),
+        }
     }
 }
 
@@ -985,8 +1117,7 @@ impl PlayerState {
                 player_stats.ranged_attack_cooldown,
                 TimerMode::Repeating,
             ),
-            heal_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
-            facing_radians: 0f32,
+            boost_time_left: 0.0,
         }
     }
 }
@@ -1023,7 +1154,7 @@ impl EnemyState {
         }
     }
 
-    fn randomize_timers(&mut self) {
+    fn randomize_ranged_timer(&mut self) {
         use std::time::Duration;
 
         self.close_attack_timer.set_elapsed(Duration::from_secs_f32(
@@ -1034,8 +1165,8 @@ impl EnemyState {
         ));
     }
 
-    fn with_random_timers(mut self) -> Self {
-        self.randomize_timers();
+    fn with_random_ranged_timer(mut self) -> Self {
+        self.randomize_ranged_timer();
         self
     }
 }
@@ -1160,8 +1291,8 @@ impl Default for PlayerStats {
             ranged_attack_pierce: 4usize,
             ranged_attack_speed: 350f32,
 
-            movement_speed: 100f32,
-            end_of_round_heal: 10usize,
+            movement_speed: 150f32,
+            end_of_round_heal: 5usize,
         }
     }
 }
