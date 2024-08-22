@@ -454,7 +454,7 @@ fn start_on_menu(mut commands: Commands, high_score: Res<HighScore>) {
     commands.spawn((
         MainMenuItem,
         TextBundle::from_section(format!(
-            "Welcome to game-jam-entry!\n\n\
+            "Welcome to Circles Infinity!\n\n\
             In this game your goal is to survive endless waves of enemies for as long as possible.\n\n\
             To learn how to play, press the G key to view a guide.\n\n\
             If you know how to play, you can press the Enter/Return key to jump right into a game.\n\n\
@@ -939,11 +939,11 @@ fn spawn_wave_if_no_enemies(
         let stats = EnemyStats::new(
             9 + wave_counter.0 as usize,
             1.0 * f32::powi(0.95, (wave_counter.0 - 1) as i32),
-            if wave_counter.0 < 10
-                || (wave_counter.0 < 15 && random::<f32>() < 0.9)
-                || (wave_counter.0 < 20 && random::<f32>() < 0.8)
-                || (wave_counter.0 < 25 && random::<f32>() < 0.6)
-                || wave_counter.0 > 25
+            if wave_counter.0 < 5
+                || (wave_counter.0 < 10 && random::<f32>() < 0.9)
+                || (wave_counter.0 < 25 && random::<f32>() < 0.8)
+                || (wave_counter.0 < 20 && random::<f32>() < 0.6)
+                || wave_counter.0 > 20
             { 0 }
             else {
                 (wave_counter.0 - 5) as usize
