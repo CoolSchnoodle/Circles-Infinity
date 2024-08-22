@@ -15,7 +15,7 @@ macro_rules! circle {
     ($radius:expr, $pos:expr) => {{
         let rad_f32 = ::std::convert::Into::<f32>::into($radius);
         let circle = ::bevy_prototype_lyon::shapes::RegularPolygon {
-            sides: 8 + (rad_f32 * 0.25).floor() as usize * 3usize,
+            sides: 6 + (rad_f32 * 0.2).floor() as usize * 3usize,
             feature: ::bevy_prototype_lyon::shapes::RegularPolygonFeature::Radius(rad_f32),
             center: ::std::convert::Into::<Vec2>::into($pos),
         };
@@ -79,9 +79,12 @@ fn main() {
                 check_and_resolve_player_death,
             ).run_if(resource_exists::<Running>).chain(),
 
+            resolve_player_projectiles.run_if(resource_exists::<Running>),
+
             (
                 move_projectiles,
-                resolve_player_projectiles,
+                do_splashes,
+                handle_residue,
                 remove_dead_enemies,
                 enemy_update_and_attack,
                 spawn_wave_if_no_enemies,
@@ -106,7 +109,7 @@ const PLAYER_COLOR_MAX_HP: Srgba = GREEN_800;
 const PLAYER_COLOR_NO_HP: Srgba = RED_800;
 const PLAYER_RADIUS: f32 = 50.0;
 
-const PROJECTILE_RADIUS: f32 = 15.0;
+const BASE_PROJECTILE_RADIUS: f32 = 15.0;
 
 fn menu_to_running(
     mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
@@ -179,7 +182,8 @@ fn menu_to_guide(mut commands: Commands, entities: Query<Entity, With<MainMenuIt
     You are the green circle (although the color will become more red as you lose health). Enemies, \
     which are orange circles will spawn around you in waves. Your goal is to survive as many waves \
     as possible. To get to the next wave, you will need to kill every enemy. By left clicking and \
-    holding, you will create projectiles which damage enemies.\n\n\
+    holding, you will create projectiles which damage enemies. You can press Q or E to switch \
+    which projectile you are using.\n\n\
     You can also upgrade your player by pressing one of the number keys (you get an extra upgrade \
     after beating each round). The types of upgrades are Health, Attack, and Speed.\n\n\
     Brightly colored, pulsating powerups will periodically spawn. Collecting these will give you \
@@ -363,7 +367,7 @@ fn handle_menu_input(mut commands: Commands, keyboard: Res<ButtonInput<KeyCode>>
 fn handle_running_input(
     mut player_upgrade_counter: ResMut<PlayerUpgradeCounter>,
     mut player_upgrade_counter_text: Query<&mut Text, With<PlayerUpgradeCounterText>>,
-    mut player: Query<(&mut PlayerStats, &mut Health), With<Player>>,
+    mut player: Query<(&mut PlayerStats, &mut Health, &mut PlayerState), With<Player>>,
     keyboard: Res<ButtonInput<KeyCode>>,
 ) {
     // didn't feel like implementing pause menu
@@ -373,6 +377,22 @@ fn handle_running_input(
         commands.insert_resource(Transition::new(Running, Paused));
     }
     */
+
+    let (mut stats, mut health, mut state) = player.single_mut();
+
+    if keyboard.just_pressed(KeyCode::KeyQ) {
+        state.current_weapon.cycle_left();
+        state.ranged_attack_timer = Timer::from_seconds(
+            stats.ranged_attack_cooldown * state.current_weapon.cooldown_multiplier(),
+            TimerMode::Repeating,
+        );
+    } else if keyboard.just_pressed(KeyCode::KeyE) {
+        state.current_weapon.cycle_right();
+        state.ranged_attack_timer = Timer::from_seconds(
+            stats.ranged_attack_cooldown * state.current_weapon.cooldown_multiplier(),
+            TimerMode::Repeating,
+        );
+    }
 
     if player_upgrade_counter.unused_upgrades > 0 {
         let upgrade: Option<PlayerUpgrade>;
@@ -394,7 +414,6 @@ fn handle_running_input(
             *player_upgrade_counter_text.single_mut() =
                 Text::from_section(player_upgrade_counter.display_text(), TextStyle::default());
 
-            let (mut stats, mut health) = player.single_mut();
             apply_player_upgrade(stats.into_inner(), health.into_inner(), upgrade);
         }
     }
@@ -516,11 +535,42 @@ fn update_player(
     state.ranged_attack_timer.tick(dt);
 }
 
+fn do_splashes(
+    mut commands: Commands,
+    mut enemies: Query<(&mut Health, &Position), With<Enemy>>,
+    splashes: Query<(Entity, &SplashProjectileResidual, &Position)>,
+) {
+    splashes.iter().for_each(|(id, residual, splash_pos)| {
+        enemies.iter_mut().for_each(|(mut enemy_hp, enemy_pos)| {
+            if to_vec2!(splash_pos).distance(to_vec2!(enemy_pos)) < ENEMY_RADIUS + residual.radius {
+                enemy_hp.damage(residual.damage);
+            }
+        });
+        commands.spawn((
+            RunningObject,
+            SplashResidue(Timer::from_seconds(0.5, TimerMode::Once)),
+            circle!(residual.radius, splash_pos),
+            Fill::color(PURPLE.with_alpha(0.3)),
+        ));
+        commands.entity(id).despawn();
+    })
+}
+
+fn handle_residue(time: Res<Time>, mut commands: Commands, mut residue: Query<(Entity, &mut SplashResidue)>) {
+    let dt = time.delta();
+    for (id, mut residue) in residue.iter_mut() {
+        residue.0.tick(dt);
+        if residue.0.finished() {
+            commands.entity(id).despawn();
+        }
+    }
+}
+
 fn enemy_update_and_attack(
     time: Res<Time>,
     mut commands: Commands,
     mut player: Query<(&Position, &mut Health), (With<Player>, Without<Enemy>)>,
-    mut query: Query<(Entity, &EnemyStats, &mut EnemyState, &mut Position, &mut Path), (With<Enemy>, Without<Player>)>
+    mut query: Query<(Entity, &EnemyStats, &mut EnemyState, &mut Position, &mut Path), (With<Enemy>, Without<Player>)>,
 ) {
     let (player_pos, mut player_hp) = player.single_mut();
     let dt = time.delta();
@@ -544,10 +594,11 @@ fn enemy_update_and_attack(
                     damage: stats.ranged_attack_damage,
                     velocity: -base_movement * stats.ranged_attack_speed,
                     location: to_vec2!(*pos),
+                    radius: BASE_PROJECTILE_RADIUS,
                     pierce_left: 1,
                     last_entity_hit: id,
                 },
-                circle!(PROJECTILE_RADIUS, *pos),
+                circle!(BASE_PROJECTILE_RADIUS, *pos),
                 Fill::color(ORANGE_RED),
                 Stroke::new(BLACK, 5f32),
             ));
@@ -558,26 +609,18 @@ fn enemy_update_and_attack(
 
 fn resolve_player_projectiles(
     mut commands: Commands,
-    player_loc: Query<&Position, With<Player>>,
     mut enemies: Query<(Entity, &Position, &mut Health), With<Enemy>>,
-    mut query: Query<(Entity, &mut Projectile), With<PlayerProjectile>>,
+    mut query: Query<(Entity, &mut Projectile, Option<&SplashProjectile>), With<PlayerProjectile>>,
 ) {
-    const COLLIDE_DISTANCE: isize = ENEMY_RADIUS as isize + PROJECTILE_RADIUS as isize;
 
-    let player_loc = to_vec2!(player_loc.single());
     let mut enemies = enemies.iter_mut()
         .map(|(id, loc, hp)| (id, to_vec2!((loc.x, loc.y)), hp))
         .collect::<Vec<_>>();
 
-    for (id, mut projectile) in query.iter_mut() {
+    for (id, mut projectile, splash_stats) in query.iter_mut() {
         let approx_x = projectile.location.x as isize;
         let approx_y = projectile.location.y as isize;
-
-        if (approx_x - player_loc.x as isize).abs() > 3000
-        || (approx_y - player_loc.y as isize).abs() > 3000 {
-            commands.entity(id).despawn();
-            continue;
-        }
+        let collide_distance: isize = ENEMY_RADIUS as isize + projectile.radius as isize;
 
         for (enemy_id, enemy_loc, ref mut enemy_health) in enemies.iter_mut() {
             if *enemy_id == projectile.last_entity_hit {
@@ -587,13 +630,23 @@ fn resolve_player_projectiles(
             let approx_enemy_x = enemy_loc.x as isize;
             let approx_enemy_y = enemy_loc.y as isize;
 
-            if (approx_enemy_x - approx_x).abs() > COLLIDE_DISTANCE
-            || (approx_enemy_y - approx_y).abs() > COLLIDE_DISTANCE {
+            if (approx_enemy_x - approx_x).abs() > collide_distance
+            || (approx_enemy_y - approx_y).abs() > collide_distance {
                 continue;
             }
 
-            if projectile.location.distance(*enemy_loc) as isize <= COLLIDE_DISTANCE {
+            if projectile.location.distance(*enemy_loc) as isize <= collide_distance {
                 enemy_health.damage(projectile.damage);
+                if let Some(splash_stats) = splash_stats {
+                    commands.spawn((
+                        RunningObject,
+                        SplashProjectileResidual {
+                            damage: splash_stats.damage,
+                            radius: splash_stats.range,
+                        },
+                        Position::new(projectile.location.x, projectile.location.y),
+                    ));
+                }
 
                 match projectile.pierce_left {
                     0 => commands.entity(id).despawn(),
@@ -623,7 +676,7 @@ fn resolve_enemy_projectiles(
             continue;
         }
 
-        const COLLIDE_DISTANCE: isize = PLAYER_RADIUS as isize + PROJECTILE_RADIUS as isize;
+        const COLLIDE_DISTANCE: isize = PLAYER_RADIUS as isize + BASE_PROJECTILE_RADIUS as isize;
 
         if COLLIDE_DISTANCE > projectile.location.distance(player_loc) as isize {
             player_hp.damage(projectile.damage);
@@ -725,25 +778,72 @@ fn player_ranged_attack(
         return;
     }
 
-    let damage = stats.ranged_attack_damage;
+    let damage = state.current_weapon.adjusted_damage(stats.ranged_attack_damage);
     let velocity = {
         let length = relative_mouse_coords.length();
         let x = relative_mouse_coords.x / length;
         let y = relative_mouse_coords.y / length;
         let scale = stats.ranged_attack_speed;
+
         Vec2::new(x * scale, y * scale)
+            * state.current_weapon.speed_multiplier()
     };
     let location = pos.into();
-    let pierce_left = stats.ranged_attack_pierce;
 
-    commands.spawn((
-        RunningObject,
-        PlayerProjectile,
-        Projectile { damage, velocity, location, pierce_left, last_entity_hit: player_id },
-        circle!(PROJECTILE_RADIUS, pos),
-        Fill::color(YELLOW_GREEN),
-        Stroke::new(BLACK, 5f32),
-    ));
+    match state.current_weapon {
+        PlayerWeapon::Normal => {
+            let pierce_left = stats.ranged_attack_pierce;
+            let radius = BASE_PROJECTILE_RADIUS;
+            commands.spawn((
+                RunningObject,
+                PlayerProjectile,
+                Projectile { damage, velocity, location, radius, pierce_left, last_entity_hit: player_id },
+                circle!(radius, pos),
+                Fill::color(YELLOW_GREEN),
+                Stroke::new(BLACK, 5f32),
+            ));
+        },
+        PlayerWeapon::Burst => {
+            for burst_info in distribute_burst(stats.ranged_attack_damage, stats.ranged_attack_pierce) {
+                let location = velocity * burst_info.offset_dist + location;
+                let radius = BASE_PROJECTILE_RADIUS * 0.5;
+                commands.spawn((
+                    RunningObject,
+                    PlayerProjectile,
+                    Projectile {
+                        damage: burst_info.damage,
+                        velocity: velocity.rotate(Vec2::from_angle(burst_info.offset_rad)),
+                        location,
+                        radius,
+                        pierce_left: burst_info.pierce,
+                        last_entity_hit: player_id,
+                    },
+                    circle!(radius, location),
+                    Fill::color(GREEN_YELLOW),
+                    Stroke::new(BLACK, 3f32),
+                ));
+            }
+        },
+        PlayerWeapon::Splash => {
+            let radius = BASE_PROJECTILE_RADIUS * 1.25;
+            commands.spawn((
+                RunningObject,
+                PlayerProjectile,
+                Projectile {
+                    damage, velocity, location, radius,
+                    pierce_left: 0,
+                    last_entity_hit: player_id,
+                },
+                SplashProjectile {
+                    damage: state.current_weapon.adjusted_splash_damage(stats.ranged_attack_damage),
+                    range: 60.0,
+                },
+                circle!(radius, location),
+                Fill::color(PURPLE_800),
+                Stroke::new(BLACK, 7f32),
+            ));
+        },
+    }
 }
 
 fn check_and_resolve_player_death(mut commands: Commands, query: Query<&Health, With<Player>>) {
@@ -754,11 +854,27 @@ fn check_and_resolve_player_death(mut commands: Commands, query: Query<&Health, 
     }
 }
 
-fn move_projectiles(time: Res<Time>, mut query: Query<(&mut Projectile, &mut Path)>) {
-    for (mut proj, mut path) in query.iter_mut() {
+fn move_projectiles(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Projectile, &mut Path)>,
+    player_loc: Query<&Position, With<Player>>,
+) {
+    let player_loc = player_loc.single();
+
+    for (id, mut proj, mut path) in query.iter_mut() {
+        let approx_x = proj.location.x as isize;
+        let approx_y = proj.location.y as isize;
+
+        if (approx_x - player_loc.x as isize).abs() > 2000
+            || (approx_y - player_loc.y as isize).abs() > 1500 {
+            commands.entity(id).despawn();
+            continue;
+        }
+
         let vel = proj.velocity;
         proj.location += vel * time.delta_seconds();
-        *path = circle!(PROJECTILE_RADIUS, proj.location).path;
+        *path = circle!(proj.radius, proj.location).path;
     }
 }
 
@@ -872,6 +988,58 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
     }
 }
 
+fn distribute_burst(damage: usize, pierce: usize) -> Vec<BurstInfo> {
+    let total = damage * pierce;
+
+    if total <= 100 {
+        let mut bursts = Vec::with_capacity(5);
+        for i in -2i8..=2 {
+            bursts.push(BurstInfo {
+                damage: (total + 3) / 6,
+                pierce: 2,
+                offset_rad: 0.15 * f32::from(i),
+                offset_dist: 0.0,
+            })
+        }
+        return bursts;
+    }
+
+    if total <= 350 && pierce > 12 {
+        let mut bursts = Vec::with_capacity(7);
+        for i in -3i8..=3 {
+            bursts.push(BurstInfo {
+                damage,
+                pierce: (pierce + 2) / 7,
+                offset_rad: 0.1 * f32::from(i),
+                offset_dist: 0.0,
+            })
+        }
+        return bursts;
+    } else if total <= 250 {
+        let mut bursts = Vec::with_capacity(5);
+        for i in -2i8..=2 {
+            bursts.push(BurstInfo {
+                damage,
+                pierce: (pierce + 2) / 5,
+                offset_rad: 0.15 * f32::from(i),
+                offset_dist: 0.0,
+            })
+        }
+    }
+
+    let mut bursts = Vec::with_capacity(9);
+    for i in -4i8..=4 {
+        bursts.push(BurstInfo {
+            damage: damage / 5,
+            pierce: pierce - 4,
+            offset_rad: 0.12 * f32::from(i),
+            offset_dist: 0.0,
+        })
+    }
+
+    bursts
+}
+
 #[derive(Resource)]
 #[derive(Debug, Copy, Clone)]
 struct Running;
@@ -950,14 +1118,41 @@ struct PlayerProjectile;
 struct EnemyProjectile;
 
 #[derive(Component)]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Projectile {
     pub damage: usize,
     pub velocity: Vec2,
     pub location: Vec2,
     pub pierce_left: usize,
     pub last_entity_hit: Entity,
+    pub radius: f32,
 }
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone, PartialEq, Default)]
+struct SplashProjectile {
+    pub damage: usize,
+    pub range: f32,
+}
+
+#[derive(Component)]
+#[derive(Debug, Copy, Clone, PartialEq, Default)]
+struct SplashProjectileResidual {
+    pub damage: usize,
+    pub radius: f32,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct BurstInfo {
+    pub damage: usize,
+    pub pierce: usize,
+    pub offset_rad: f32,
+    pub offset_dist: f32,
+}
+
+#[derive(Component)]
+#[derive(Debug, Clone, PartialEq)]
+struct SplashResidue(pub Timer);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 enum PlayerUpgrade {
@@ -1000,11 +1195,19 @@ struct PlayerStats {
     end_of_round_heal: usize,
 }
 
+#[derive(Debug, Copy, Clone, Default)]
+enum PlayerWeapon {
+    #[default] Normal,
+    Burst,
+    Splash,
+}
+
 #[derive(Component)]
 #[derive(Debug, Clone)]
 struct PlayerState {
     close_attack_timer: Timer,
     ranged_attack_timer: Timer,
+    current_weapon: PlayerWeapon,
     boost_time_left: f32,
 }
 
@@ -1106,6 +1309,51 @@ impl Position {
     }
 }
 
+impl PlayerWeapon {
+    fn cycle_left(&mut self) {
+        *self = match self {
+            Self::Normal => Self::Splash,
+            Self::Splash => Self::Burst,
+            Self::Burst => Self::Normal,
+        }
+    }
+    pub fn cycle_right(&mut self) {
+        *self = match self {
+            Self::Normal => Self::Burst,
+            Self::Burst => Self::Splash,
+            Self::Splash => Self::Normal,
+        }
+    }
+
+    pub fn cooldown_multiplier(&self) -> f32 {
+        match self {
+            Self::Normal => 1.0,
+            Self::Burst => 2.5,
+            Self::Splash => 4.0,
+        }
+    }
+    pub fn adjusted_damage(&self, base_damage: usize) -> usize {
+        match self {
+            Self::Normal => base_damage + 2,
+            Self::Burst => base_damage,
+            Self::Splash => base_damage,
+        }
+    }
+    pub fn speed_multiplier(&self) -> f32 {
+        match self {
+            Self::Normal => 1.1,
+            Self::Burst => 0.9,
+            Self::Splash => 0.7,
+        }
+    }
+    pub fn adjusted_splash_damage(&self, base_damage: usize) -> usize {
+        match self {
+            Self::Splash => base_damage * 2,
+            _ => 0
+        }
+    }
+}
+
 impl PlayerState {
     fn from_player_stats(player_stats: PlayerStats) -> Self {
         Self {
@@ -1117,6 +1365,7 @@ impl PlayerState {
                 player_stats.ranged_attack_cooldown,
                 TimerMode::Repeating,
             ),
+            current_weapon: PlayerWeapon::default(),
             boost_time_left: 0.0,
         }
     }
@@ -1286,10 +1535,10 @@ impl Default for PlayerStats {
             close_attack_damage: 40usize,
             close_attack_cooldown: 1f32,
 
-            ranged_attack_damage: 5usize,
+            ranged_attack_damage: 6usize,
             ranged_attack_cooldown: 0.15f32,
             ranged_attack_pierce: 4usize,
-            ranged_attack_speed: 350f32,
+            ranged_attack_speed: 450f32,
 
             movement_speed: 150f32,
             end_of_round_heal: 5usize,
