@@ -549,7 +549,7 @@ fn do_splashes(
         commands.spawn((
             RunningObject,
             SplashResidue(Timer::from_seconds(0.5, TimerMode::Once)),
-            circle!(residual.radius, splash_pos),
+            circle!(residual.radius * 0.6, splash_pos),
             Fill::color(PURPLE.with_alpha(0.3)),
         ));
         commands.entity(id).despawn();
@@ -825,7 +825,7 @@ fn player_ranged_attack(
             }
         },
         PlayerWeapon::Splash => {
-            let radius = BASE_PROJECTILE_RADIUS * 1.25;
+            let radius = BASE_PROJECTILE_RADIUS * 1.7;
             commands.spawn((
                 RunningObject,
                 PlayerProjectile,
@@ -836,7 +836,7 @@ fn player_ranged_attack(
                 },
                 SplashProjectile {
                     damage: state.current_weapon.adjusted_splash_damage(stats.ranged_attack_damage),
-                    range: 60.0,
+                    range: 100.0,
                 },
                 circle!(radius, location),
                 Fill::color(PURPLE_800),
@@ -991,7 +991,7 @@ fn apply_player_upgrade(stats: &mut PlayerStats, health: &mut Health, upgrade: P
 fn distribute_burst(damage: usize, pierce: usize) -> Vec<BurstInfo> {
     let total = damage * pierce;
 
-    if total <= 100 {
+    if total <= 200 {
         let mut bursts = Vec::with_capacity(5);
         for i in -2i8..=2 {
             bursts.push(BurstInfo {
@@ -1004,27 +1004,17 @@ fn distribute_burst(damage: usize, pierce: usize) -> Vec<BurstInfo> {
         return bursts;
     }
 
-    if total <= 350 && pierce > 12 {
+    if total <= 600 {
         let mut bursts = Vec::with_capacity(7);
         for i in -3i8..=3 {
             bursts.push(BurstInfo {
-                damage,
-                pierce: (pierce + 2) / 7,
+                damage: damage * 2 / 3,
+                pierce: pierce / 4,
                 offset_rad: 0.1 * f32::from(i),
                 offset_dist: 0.0,
             })
         }
         return bursts;
-    } else if total <= 250 {
-        let mut bursts = Vec::with_capacity(5);
-        for i in -2i8..=2 {
-            bursts.push(BurstInfo {
-                damage,
-                pierce: (pierce + 2) / 5,
-                offset_rad: 0.15 * f32::from(i),
-                offset_dist: 0.0,
-            })
-        }
     }
 
     let mut bursts = Vec::with_capacity(9);
@@ -1327,28 +1317,28 @@ impl PlayerWeapon {
 
     pub fn cooldown_multiplier(&self) -> f32 {
         match self {
-            Self::Normal => 1.0,
-            Self::Burst => 2.5,
-            Self::Splash => 4.0,
+            Self::Normal => 1.2,
+            Self::Burst => 1.8,
+            Self::Splash => 2.5,
         }
     }
     pub fn adjusted_damage(&self, base_damage: usize) -> usize {
         match self {
-            Self::Normal => base_damage + 2,
+            Self::Normal => base_damage - 3,
             Self::Burst => base_damage,
-            Self::Splash => base_damage,
+            Self::Splash => base_damage + 2,
         }
     }
     pub fn speed_multiplier(&self) -> f32 {
         match self {
-            Self::Normal => 1.1,
-            Self::Burst => 0.9,
-            Self::Splash => 0.7,
+            Self::Normal => 0.85,
+            Self::Burst => 1.2,
+            Self::Splash => 2.0,
         }
     }
     pub fn adjusted_splash_damage(&self, base_damage: usize) -> usize {
         match self {
-            Self::Splash => base_damage * 2,
+            Self::Splash => base_damage * 22 / 10,
             _ => 0
         }
     }
